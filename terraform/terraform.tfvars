@@ -1,0 +1,15 @@
+ecs_task_name                 = "threat-intel-runner"
+source_code_repo_url          = "https://github.com/Acontoso/threat-intel-automation-datp"
+environment                   = "contoso"
+eventbridge_trigger_name      = "scheduled-ti-poll"
+container_name                = "threat-intel-runner"
+ecr_registry                  = "12345678912.dkr.ecr.ap-southeast-2.amazonaws.com"
+image_repo_name               = "threat-intel-automation"
+ssm_cmk_kms_key_alias         = "cmk-ssm"
+ecr_cmk_kms_key_alias         = "cmk-ecr"
+task_role                     = "ecs-threat-intel-role"
+task_execution_role           = "ecs-threat-intel-execution-role"
+cluster_name                  = "sec-cluster"
+ecs_iam_role_eventbridge_name = "eventbridge-ecs-task-trigger-role"
+security_group_id             = []
+subnet_ids                    = []
