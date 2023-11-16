@@ -1,0 +1,77 @@
+resources:
+  pipelines:
+  - pipeline: version
+    source: threat-intel-automation-version
+    trigger: true
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: ecr_registry
+    value: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com
+  - name: ecr_repository
+    value: threat-intel-automation
+  - name: account_id
+    value: 123456789012
+
+stages:
+- stage: Docker
+  displayName: Build & Push Docker image to AWS ECR
+  jobs:
+  - job: Build_Push
+    steps:
+    - script: |
+        wget https://d2hvyiie56hcat.cloudfront.net/linux/amd64/installer/deb/latest/aws-signer-notation-cli_amd64.deb
+        sudo dpkg -i -E aws-signer-notation-cli_amd64.deb
+      name: InstallAwsSigner
+    - checkout: self
+      persistCredentials: true
+    - script: |
+        latestTag=$(git describe --tags `git rev-list --tags --max-count=1`)
+        echo "${latestTag}"
+        echo "##vso[task.setvariable variable=version;isOutput=true]$latestTag"
+      name: version
+    - task: DockerInstaller@0
+      inputs:
+        dockerVersion: '17.09.0-ce'
+    - task: AWSShellScript@1
+      inputs:
+        awsCredentials: 'sec-log-account'
+        disableAutoCwd: true
+        regionName: ap-southeast-2
+        scriptType: 'inline'
+        inlineScript: |
+          aws ecr get-login-password --region ap-southeast-2 | docker login --username AWS --password-stdin "$(ecr_registry)"
+          docker build -f Dockerfile -t "$(ecr_registry)"/"$(ecr_repository)":"$(version.version)" .
+          docker push "$(ecr_registry)"/"$(ecr_repository)":"$(version.version)"
+        workingDirectory: $(Build.SourcesDirectory)
+- stage: TerraformDeploy
+  dependsOn: Docker
+  jobs:
+  - deployment: TerraformDependancy
+    variables:
+      version: $[ stageDependencies.Docker.Build_Push.outputs['version.version'] ]
+    displayName: Deploy Terraform Dependancy
+    environment: 'aws'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+            persistCredentials: true
+          - task: AWSShellScript@1
+            inputs:
+              workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+              awsCredentials: 'sec-account'
+              regionName: 'ap-southeast-2'
+              scriptType: 'inline'
+              inlineScript: 'terraform init'
+              disableAutoCwd: true
+          - task: AWSShellScript@1
+            inputs:
+              workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+              awsCredentials: 'sec-account'
+              regionName: 'ap-southeast-2'
+              scriptType: 'inline'
+              inlineScript: terraform apply -auto-approve -input=false -var "image_tag=$(version)"
+              disableAutoCwd: true

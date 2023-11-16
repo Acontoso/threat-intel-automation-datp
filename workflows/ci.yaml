@@ -1,0 +1,77 @@
+trigger:
+  branches:
+    exclude:
+    - main
+    - master
+
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+- stage: TestDockerBuild
+  jobs:
+  - job: Docker
+    steps:
+    - task: Docker@2
+      displayName: Build Docker image locally to verify build
+      inputs:
+        command: build
+        dockerfile: '$(Build.SourcesDirectory)/Dockerfile'
+        buildContext: '$(Build.SourcesDirectory)'
+
+- stage: LintingPython
+  dependsOn: []
+  jobs:
+  - job: Lint
+    steps:
+    - script: |
+        pip3 install -r requirements_dev.txt
+      name: Install
+    - script: |
+        find . -name '*.py' -exec pylint {} \;
+      name: Pylint
+    - script: |
+        black --check --diff .
+      name: Black
+- stage: Terraform
+  dependsOn: []
+  jobs:
+  - job: TerraformLint
+    displayName: Terraform Linting
+    continueOnError: true
+    steps:
+    - task: TerraformCLI@0
+      inputs:
+        workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+        command: "fmt"
+  - job: TerraformCI
+    displayName: Terraform CI
+    steps:
+    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+      inputs:
+        terraformVersion: '1.6.2'
+    - task: AWSShellScript@1
+      inputs:
+        awsCredentials: 'sec-log-account'
+        regionName: 'ap-southeast-2'
+        scriptType: 'inline'
+        inlineScript: 'terraform init'
+        disableAutoCwd: true
+        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+    - task: AWSShellScript@1
+      inputs:
+        awsCredentials: 'sec-log-account'
+        regionName: 'ap-southeast-2'
+        scriptType: 'inline'
+        inlineScript: 'terraform validate'
+        disableAutoCwd: true
+        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+    - task: AWSShellScript@1
+      inputs:
+        awsCredentials: 'sec-log-account'
+        regionName: 'ap-southeast-2'
+        scriptType: 'inline'
+        inlineScript: 'terraform plan'
+        disableAutoCwd: true
+        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'

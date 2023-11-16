@@ -1,0 +1,82 @@
+resource "aws_cloudwatch_event_rule" "schedule" {
+  name                = var.eventbridge_trigger_name
+  description         = "Fire off half day"
+  schedule_expression = "rate(12 hours)"
+  tags                = local.tags
+}
+
+data "aws_iam_policy_document" "assume_role_eventbridge" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+resource "aws_iam_role" "ecs_events" {
+  name               = var.ecs_iam_role_eventbridge_name
+  assume_role_policy = data.aws_iam_policy_document.assume_role_eventbridge.json
+  tags               = local.tags
+}
+
+data "aws_iam_policy_document" "ecs_policy_document_eventbridge" {
+  statement {
+    sid    = "AllowEcsTask"
+    effect = "Allow"
+    actions = [
+      "ecs:RunTask"
+    ]
+    resources = [
+      aws_ecs_task_definition.task_definition_intel.arn
+    ]
+  }
+
+  statement {
+    sid    = "AllowPassRole"
+    effect = "Allow"
+    actions = [
+      "iam:PassRole"
+    ]
+    resources = [
+      aws_iam_role.task_role.arn,
+      aws_iam_role.task_execution_role.arn
+    ]
+  }
+}
+
+resource "aws_iam_policy" "ecs_eventbridge_policy" {
+  name   = "${var.ecs_iam_role_eventbridge_name}-policy"
+  policy = data.aws_iam_policy_document.ecs_policy_document_eventbridge.json
+  tags   = local.tags
+}
+
+resource "aws_iam_policy_attachment" "policy_attachment_eventbridge_role" {
+  name       = "role-policy-attachment-3"
+  roles      = [aws_iam_role.ecs_events.name]
+  policy_arn = aws_iam_policy.ecs_eventbridge_policy.arn
+}
+
+resource "aws_cloudwatch_event_target" "ecs_scheduled_task" {
+  target_id = "run-scheduled-task-half-day"
+  arn       = data.aws_ecs_cluster.ecs_threat_intel.arn
+  rule      = aws_cloudwatch_event_rule.schedule.name
+  role_arn  = aws_iam_role.ecs_events.arn
+
+  ecs_target {
+    task_count          = 1
+    task_definition_arn = aws_ecs_task_definition.task_definition_intel.arn
+    launch_type         = "FARGATE"
+    platform_version    = "1.4.0"
+    propagate_tags      = "TASK_DEFINITION"
+    tags                = local.tags
+    network_configuration {
+      subnets         = var.subnet_ids
+      security_groups = var.security_group_id
+    }
+  }
+}
