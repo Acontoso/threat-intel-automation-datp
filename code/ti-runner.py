@@ -42,7 +42,7 @@ def access_token_ms_sec_api(client_id: str, client_secret: str, tenant_id: str) 
     )
     if access_token_response.status_code != 200:
         raise Exception(
-            f"[-] Failed to pull access token - {access_token_response.text}"
+            f"[-] Failed to pull access token - {access_token_response.status_code}"
         )
     json_resp = access_token_response.json()
     token = json_resp["access_token"]
@@ -68,7 +68,7 @@ def get_ssm_params_ms(client: boto3.client) -> tuple:
         .get("Value")
     )
     tenant_id = (
-        client.get_parameter(Name="/threat-intel/tenant_id", WithDecryption=False)
+        client.get_parameter(Name="/threat-intel/tenant_id", WithDecryption=True)
         .get("Parameter")
         .get("Value")
     )
@@ -93,7 +93,7 @@ def get_anomali_creds() -> tuple:
         .get("Value")
     )
     api_key = (
-        ssm_client.get_parameter(Name="/threat-intel/api-key", WithDecryption=False)
+        ssm_client.get_parameter(Name="/threat-intel/api-key", WithDecryption=True)
         .get("Parameter")
         .get("Value")
     )
@@ -107,6 +107,7 @@ def check_indicator(jwt_token: str, indicator: str) -> bool:
     resp = requests.get(url=endpoint, headers=header)
     if resp.status_code == 200:
         if len(resp.json().get("value")) > 0:
+            print(f"[+] Indicator exists: {indicator}, returning...")
             return True
         return False
     else:
@@ -157,6 +158,7 @@ def parse_and_send(ioc: dict, jwt_token: str) -> bool:
         url=endpoint, headers=header, data=json.dumps(payload_dict)
     )
     if response.status_code == 200:
+        print(f"[+] Added indicator: {ioc.get('value')}")
         return True
     else:
         print(
@@ -166,6 +168,21 @@ def parse_and_send(ioc: dict, jwt_token: str) -> bool:
         return False
 
 
+def runner(threat_objects: list, jwt_token: str) -> None:
+    """Main thread pool runner"""
+    success = 0
+    failures = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        results = executor.map(parse_and_send, threat_objects, itertools.repeat(jwt_token))
+        for result in results:
+            if result:
+                success = success + 1
+            else:
+                failures = failures + 1
+    print(f"[+] Successful uploads {success}")
+    print(f"[-] Unsuccessful uploads {failures}")
+
+
 def ingest_threat_intel(username: str, api_key: str, jwt_token: str):
     """Main function to pull and send data to Defender for Endpoint"""
     time_delta = (datetime.now() - timedelta(hours=12)).isoformat(
@@ -173,39 +190,23 @@ def ingest_threat_intel(username: str, api_key: str, jwt_token: str):
     )
     endpoint = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={time_delta})+AND+confidence>=85+AND+status=active+AND+type=hash+AND+subtype=SHA256+AND+trusted_circle_id=379"
     header = {"Authorization": f"apikey {username}:{api_key}"}
-    attempt = 0
-    max_attempts = 3
-    while attempt <= max_attempts:
-        response = requests.get(url=endpoint, headers=header)
-        if response.status_code == 200:
-            threat_objects = response.json().get("objects")
-            print(f"[+] Number of new threat intel to import is {len(threat_objects)}")
-            success = 0
-            failures = 0
-            with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-                results = executor.map(
-                    parse_and_send,
-                    threat_objects,
-                    itertools.repeat(jwt_token),
-                    timeout=30,
-                )
-                for result in results:
-                    if result:
-                        success = success + 1
-                    else:
-                        failures = failures + 1
-            print(f"[+] Successful uploads {success}")
-            print(f"[-] Unsuccessful uploads {failures}")
-            return
+    response = requests.get(url=endpoint, headers=header)
+    if response.status_code == 200:
+        threat_objects = response.json().get("objects")
+        total = len(threat_objects)
+        print(f"[+] Number of new threat intel to import is {total}")
+        if total > 50:
+            for index in range(0, total, 50):
+                threat_objects_subset = threat_objects[index:index+50]
+                runner(threat_objects_subset, jwt_token)
+                time.sleep(60)
         else:
-            attempt = attempt + 1
-            print(
-                f"[-] Status code returned {response.status_code} when pulling confidence, attempt: {attempt}"
-            )
-            time.sleep(10)
-    if attempt > max_attempts:
-        print("[-] Failed to return confidence, will return zero")
+            runner(threat_objects, jwt_token)
         return
+    else:
+        raise Exception(
+            f"[-] Status code returned {response.status_code} when pulling theat intel...\n{response.text}"
+        )
 
 
 # ignore C0123 for lambda comment!!
