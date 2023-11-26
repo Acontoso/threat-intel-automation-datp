@@ -1,0 +1,28 @@
+name: Checkov
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  checkov-job:
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: 
+          - terraform/
+    runs-on: ubuntu-latest
+    name: checkov-action
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@master
+
+      - name: Run Checkov action
+        id: checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ matrix.dir }}
+          quiet: true
+          soft_fail: false
+          download_external_modules: true
