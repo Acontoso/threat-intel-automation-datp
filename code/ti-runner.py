@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """Automated Threat Intel - Anomali - Defender For Endpoint & Umbrella"""
 import json
+from io import StringIO
 import concurrent.futures
 import time
 import itertools
@@ -13,6 +14,9 @@ import ioc_fanger
 REGION = "ap-southeast-2"
 UMBRELLA_DEST_LIST_IDS = ("17699844", "17699845")
 CONFIDENCE = 70
+MANDIANT_FUSION_ID = "375"
+CFC_ID = "11711"
+CISA_ID = "403"
 
 
 def generate_access_token_payload(
@@ -122,21 +126,24 @@ def check_indicator(jwt_token: str, indicator: str) -> bool:
 def construct_payload_defender(ioc: dict) -> dict:
     """Create unique payload for DATP upload"""
     time_delta = (
-        (datetime.now(timezone.utc) + timedelta(weeks=24))
+        (datetime.now(timezone.utc) + timedelta(weeks=52))
         .isoformat("T", "seconds")
         .replace("+00:00", "Z")
     )
+    msg_str = StringIO()
+    msg_str.write("Tags assigned to TI\n\n")
+    source = ioc.get("source")
     indicator = ioc.get("value")
+    tags = ioc.get("tags")
+    for tag in tags:
+        name = tag.get("name")
+        msg_str.write(f"{name}\n")
     identifier = indicator[-4:]
     ti_payload = {}
     ti_payload["indicatorValue"] = indicator
-    ti_payload["title"] = f"Mandiant-ThreatFeed-{identifier}"
-    ti_payload["description"] = (
-        "Generic Mandiant IOC via Anomali"
-        if ioc.get("description") is None
-        else ioc.get("description")
-    )
-    ti_payload["action"] = "Audit"
+    ti_payload["title"] = f"{source}-{identifier}"
+    ti_payload["description"] = msg_str.getvalue()
+    ti_payload["action"] = "BlockAndRemediate"
     ti_payload["severity"] = "High"
     ti_payload["indicatorType"] = "FileSha256"
     ti_payload["generateAlert"] = True
@@ -189,10 +196,10 @@ def runner(threat_objects: list, jwt_token: str) -> None:
 
 def ingest_threat_intel_hash(username: str, api_key: str, jwt_token: str):
     """Main function to pull and send data to Defender for Endpoint"""
-    time_delta = (datetime.now() - timedelta(hours=24)).isoformat(
+    time_delta = (datetime.now() - timedelta(hours=12)).isoformat(
         sep="T", timespec="auto"
     )
-    endpoint = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={time_delta})+AND+confidence>={CONFIDENCE}+AND+status=active+AND+type=hash+AND+subtype=SHA256+AND+(trusted_circle_id=375+OR+trusted_circle_id=403+OR+trusted_circle_id=11711)"
+    endpoint = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={time_delta})+AND+confidence>={CONFIDENCE}+AND+status=active+AND+type=hash+AND+subtype=SHA256+AND+(trusted_circle_id={MANDIANT_FUSION_ID}+OR+trusted_circle_id={CISA_ID}+OR+trusted_circle_id={CFC_ID})"
     header = {"Authorization": f"apikey {username}:{api_key}"}
     response = requests.get(url=endpoint, headers=header)
     if response.status_code == 200:
@@ -217,11 +224,12 @@ def create_payload(threat_objects: list) -> list:
     iocs = []
     for threat in threat_objects:
         value = threat.get("value")
+        source = threat.get("source")
         logged_defanged_value = ioc_fanger.defang(value)
         print(f"[+] Adding Indicator {logged_defanged_value}")
         ioc_dict = {
             "destination": value,
-            "comment": "Automated threat intel ingestion from Mandiant Fusion feeds",
+            "comment": f"Automated threat intel ingestion from {source} intel feeds",
         }
         iocs.append(ioc_dict)
     return iocs
@@ -266,12 +274,12 @@ def generate_umbrella_jwt(umbrella_key: str, umbrella_secret: str) -> str:
 
 def ingest_threat_intel_network_ioc(username: str, api_key: str) -> None:
     """Function to pull network based IOC's and upload to umbrella"""
-    time_delta = (datetime.now() - timedelta(hours=24)).isoformat(
+    time_delta = (datetime.now() - timedelta(hours=12)).isoformat(
         sep="T", timespec="auto"
     )
     umbrella_key, umbrella_secret = get_umbrella_api_key()
     jwt_token = generate_umbrella_jwt(umbrella_key, umbrella_secret)
-    endpoint = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={time_delta})+AND+confidence>={CONFIDENCE}+AND+status=active+AND+type=domain+AND+(trusted_circle_id=375+OR+trusted_circle_id=403+OR+trusted_circle_id=11711)"
+    endpoint = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={time_delta})+AND+confidence>={CONFIDENCE}+AND+status=active+AND+type=domain+AND+(trusted_circle_id={MANDIANT_FUSION_ID}+OR+trusted_circle_id={CFC_ID}+OR+trusted_circle_id={CISA_ID})"
     header = {"Authorization": f"apikey {username}:{api_key}"}
     response = requests.get(url=endpoint, headers=header)
     if response.status_code == 200:
