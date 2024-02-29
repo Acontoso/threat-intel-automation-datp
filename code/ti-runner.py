@@ -47,6 +47,7 @@ def access_token_ms_sec_api(client_id: str, client_secret: str, tenant_id: str) 
         "https://login.microsoftonline.com/" + tenant_id + "/oauth2/v2.0/token",
         headers=headers,
         data=payload,
+        timeout=60,
     )
     if access_token_response.status_code != 200:
         raise Exception(
@@ -112,7 +113,7 @@ def check_indicator(jwt_token: str, indicator: str) -> bool:
     """Check to see if indicator already exists in Defender for Endpoint"""
     endpoint = f"https://api.securitycenter.microsoft.com/api/indicators?$filter=indicatorValue+eq+'{indicator}'"
     header = {"Authorization": f"Bearer {jwt_token}"}
-    resp = requests.get(url=endpoint, headers=header)
+    resp = requests.get(url=endpoint, headers=header, timeout=60)
     if resp.status_code == 200:
         if len(resp.json().get("value")) > 0:
             print(f"[+] Indicator exists: {indicator}, returning...")
@@ -165,7 +166,7 @@ def parse_and_send(ioc: dict, jwt_token: str) -> bool:
         "Content-Type": "application/json",
     }
     response = requests.post(
-        url=endpoint, headers=header, data=json.dumps(payload_dict)
+        url=endpoint, headers=header, data=json.dumps(payload_dict), timeout=60
     )
     if response.status_code == 200:
         print(f"[+] Added indicator: {ioc.get('value')}")
@@ -201,7 +202,7 @@ def ingest_threat_intel_hash(username: str, api_key: str, jwt_token: str):
     )
     endpoint = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={time_delta})+AND+confidence>={CONFIDENCE}+AND+status=active+AND+type=hash+AND+subtype=SHA256+AND+(trusted_circle_id={MANDIANT_FUSION_ID}+OR+trusted_circle_id={CISA_ID}+OR+trusted_circle_id={CFC_ID})"
     header = {"Authorization": f"apikey {username}:{api_key}"}
-    response = requests.get(url=endpoint, headers=header)
+    response = requests.get(url=endpoint, headers=header, timeout=60)
     if response.status_code == 200:
         threat_objects = response.json().get("objects")
         total = len(threat_objects)
@@ -256,13 +257,14 @@ def get_umbrella_api_key() -> tuple:
 def generate_umbrella_jwt(umbrella_key: str, umbrella_secret: str) -> str:
     """Generate JWT token via Client Credential flow"""
     header = {"Content-Type": "application/x-www-form-urlencoded"}
-    token_endpoint = "https://api.umbrella.com/auth/v2/token"
+    token_endpoint = "https://api.umbrella.com/auth/v2/token"  # nosec
     data = "grant_type=client_credentials"
     response = requests.post(
         url=token_endpoint,
         headers=header,
         data=data,
         auth=(umbrella_key, umbrella_secret),
+        timeout=60,
     )
     if response.status_code != 200:
         raise Exception(
@@ -281,7 +283,7 @@ def ingest_threat_intel_network_ioc(username: str, api_key: str) -> None:
     jwt_token = generate_umbrella_jwt(umbrella_key, umbrella_secret)
     endpoint = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={time_delta})+AND+confidence>={CONFIDENCE}+AND+status=active+AND+type=domain+AND+(trusted_circle_id={MANDIANT_FUSION_ID}+OR+trusted_circle_id={CFC_ID}+OR+trusted_circle_id={CISA_ID})"
     header = {"Authorization": f"apikey {username}:{api_key}"}
-    response = requests.get(url=endpoint, headers=header)
+    response = requests.get(url=endpoint, headers=header, timeout=60)
     if response.status_code == 200:
         threat_objects = response.json().get("objects")
         total = len(threat_objects)
@@ -294,7 +296,10 @@ def ingest_threat_intel_network_ioc(username: str, api_key: str) -> None:
         for index, umbrella_list in enumerate(UMBRELLA_DEST_LIST_IDS):
             endpoint = f"https://api.umbrella.com/policies/v2/destinationlists/{umbrella_list}/destinations"
             response = requests.post(
-                url=endpoint, headers=headers_umbrella, data=json.dumps(payload)
+                url=endpoint,
+                headers=headers_umbrella,
+                data=json.dumps(payload),
+                timeout=60,
             )
             match index:
                 case 0:
