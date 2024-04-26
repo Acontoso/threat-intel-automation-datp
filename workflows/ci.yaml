@@ -1,12 +1,12 @@
-trigger:
-  branches:
-    exclude:
-    - main
-    - master
-
+trigger: none
 
 pool:
   vmImage: ubuntu-latest
+
+variables:
+- group: OIDC AWS CICD
+- name: 'role_arn'
+  value: 'arn:aws:iam::12345678912:role/cicd-security-aws-oidc-service-connection'
 
 stages:
 - stage: TestDockerBuild
@@ -19,59 +19,98 @@ stages:
         command: build
         dockerfile: '$(Build.SourcesDirectory)/Dockerfile'
         buildContext: '$(Build.SourcesDirectory)'
-
-- stage: LintingPython
-  dependsOn: []
-  jobs:
-  - job: Lint
+  - job: Scan
+    displayName: 'Run Terrascan to check for compliance'
     steps:
     - script: |
-        pip3 install -r requirements_dev.txt
-      name: Install
+        curl -L "$(curl -s https://api.github.com/repos/tenable/terrascan/releases/latest | grep -o -E "https://.+?_Linux_x86_64.tar.gz")" > terrascan.tar.gz
+        tar -xvf terrascan.tar.gz
+        install terrascan /usr/local/bin
+      displayName: 'Get tools'
     - script: |
-        find . -name '*.py' -exec pylint {} \;
-      name: Pylint
-    - script: |
-        black --check --diff .
-      name: Black
+        terrascan scan -i docker -f Dockerfile --output junit-xml -c terrascan.toml > $(Build.SourcesDirectory)/terrascan-results.xml
+        terrascan scan -i docker -f Dockerfile -o yaml -c terrascan.toml
+      displayName: 'Run terrascan'
+      workingDirectory: $(System.DefaultWorkingDirectory)
+    - task: PublishTestResults@2
+      displayName: "Terrascan Results"
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: "JUnit"
+        testResultsFiles: "**/terrascan-*.xml"
+        searchFolder: "$(Build.SourcesDirectory)"
+        mergeTestResults: false
+        testRuntitle: Terrascan
+        failTaskOnFailedTests: false
+        publishRunAttachments: true
+
+- stage: DevOpsSecurity
+  dependsOn: []
+  jobs:
+  - job: DevSecOps
+    steps:
+    - task: MicrosoftSecurityDevOps@1
+      displayName: 'Microsoft Security DevOps'
+      name: 'MSSecurityDevOpsScan'
+      inputs:
+        command: 'run'
+        policy: 'azuredevops'
+        categories: 'IaC'
+        tools: 'terrascan'
+        config: '$(System.DefaultWorkingDirectory)/new-linux.gdnconfig'
+
+- stage: SAST
+  dependsOn: []
+  jobs:
+  - job: Dependency_Scanning_Codebase
+    steps:
+    - task: AdvancedSecurity-Dependency-Scanning@1
+  - job: Code_Scanning_Codebase
+    steps:
+    - task: AdvancedSecurity-Codeql-Init@1
+      inputs:
+        languages: "python"
+        querysuite: 'security-extended'
+        sourcesfolder: $(System.DefaultWorkingDirectory)/code
+    - task: AdvancedSecurity-Codeql-Analyze@1
+    - task: AdvancedSecurity-Publish@1
+
 - stage: Terraform
   dependsOn: []
   jobs:
-  - job: TerraformLint
-    displayName: Terraform Linting
-    continueOnError: true
-    steps:
-    - task: TerraformCLI@0
-      inputs:
-        workingDirectory: $(System.DefaultWorkingDirectory)/terraform
-        command: "fmt"
   - job: TerraformCI
     displayName: Terraform CI
     steps:
-    - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
-      inputs:
-        terraformVersion: '1.6.2'
-    - task: AWSShellScript@1
-      inputs:
-        awsCredentials: 'sec-log-account'
-        regionName: 'ap-southeast-2'
-        scriptType: 'inline'
-        inlineScript: 'terraform init'
-        disableAutoCwd: true
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
-    - task: AWSShellScript@1
-      inputs:
-        awsCredentials: 'sec-log-account'
-        regionName: 'ap-southeast-2'
-        scriptType: 'inline'
-        inlineScript: 'terraform validate'
-        disableAutoCwd: true
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
-    - task: AWSShellScript@1
-      inputs:
-        awsCredentials: 'sec-log-account'
-        regionName: 'ap-southeast-2'
-        scriptType: 'inline'
-        inlineScript: 'terraform plan'
-        disableAutoCwd: true
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+    - script: |
+        export CLIENT_ID="$(client_id)"
+        export CLIENT_SECRET="$(client_secret)"
+        export TENANT_ID="$(tenant_id)"
+        export SCOPE="${CLIENT_ID}""/.default"
+        az login --service-principal --allow-no-subscriptions -u "${CLIENT_ID}" -p "${CLIENT_SECRET}" --tenant "${TENANT_ID}"
+        export ACCESS_TOKEN=$(az account get-access-token --query "accessToken" --tenant "$(tenant_id)" --scope "${SCOPE}" --output tsv)
+        echo "##vso[task.setvariable variable=ACCESS_TOKEN;]$ACCESS_TOKEN"
+      workingDirectory: '$(System.DefaultWorkingDirectory)'
+      name: aztoken
+    - script: |
+        aws sts assume-role-with-web-identity --role-arn "${{variables.role_arn}}" --region ap-southeast-2 --web-identity-token "$(ACCESS_TOKEN)" --role-session-name cicd > secrets
+        export AWS_ACCESS_KEY_ID="$(cat secrets | jq '.Credentials.AccessKeyId' --raw-output)"
+        export AWS_SECRET_ACCESS_KEY="$(cat secrets | jq  '.Credentials.SecretAccessKey' --raw-output)"
+        export AWS_SESSION_TOKEN="$(cat secrets | jq '.Credentials.SessionToken' --raw-output)"
+        echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;]$AWS_ACCESS_KEY_ID"
+        echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;]$AWS_SECRET_ACCESS_KEY"
+        echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;]$AWS_SESSION_TOKEN"
+        echo "##vso[task.setvariable variable=AWS_REGION;]ap-southeast-2"
+      workingDirectory: '$(System.DefaultWorkingDirectory)'
+      name: awstoken
+    - script: |
+        terraform init
+      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+      name: init
+    - script: |
+        terraform validate
+      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+      name: validate
+    - script: |
+        terraform plan
+      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+      name: plan

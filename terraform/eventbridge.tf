@@ -1,6 +1,6 @@
 resource "aws_cloudwatch_event_rule" "schedule" {
   name                = var.eventbridge_trigger_name
-  description         = "Fire off half day"
+  description         = "Fire twice a day"
   schedule_expression = "rate(12 hours)"
   tags                = local.tags
 }
@@ -11,7 +11,7 @@ data "aws_iam_policy_document" "assume_role_eventbridge" {
 
     principals {
       type        = "Service"
-      identifiers = ["scheduler.amazonaws.com"]
+      identifiers = ["events.amazonaws.com"]
     }
 
     actions = ["sts:AssumeRole"]
@@ -32,8 +32,14 @@ data "aws_iam_policy_document" "ecs_policy_document_eventbridge" {
       "ecs:RunTask"
     ]
     resources = [
-      aws_ecs_task_definition.task_definition_intel.arn
+      "arn:aws:ecs:*:${data.aws_caller_identity.current.account_id}:task-definition/${var.ecs_task_name}:*",
+      "arn:aws:ecs:*:${data.aws_caller_identity.current.account_id}:task-definition/${var.ecs_task_name}"
     ]
+    condition {
+      test     = "ArnLike"
+      variable = "ecs:cluster"
+      values   = ["arn:aws:ecs:*:${data.aws_caller_identity.current.account_id}:cluster/security-engineering-cluster"]
+    }
   }
 
   statement {
@@ -42,10 +48,12 @@ data "aws_iam_policy_document" "ecs_policy_document_eventbridge" {
     actions = [
       "iam:PassRole"
     ]
-    resources = [
-      aws_iam_role.task_role.arn,
-      aws_iam_role.task_execution_role.arn
-    ]
+    resources = ["*"]
+    condition {
+      test     = "StringLike"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com"]
+    }
   }
 }
 

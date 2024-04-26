@@ -1,0 +1,35 @@
+trigger:
+  branches:
+    exclude:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+- stage: LintingPython
+  dependsOn: []
+  jobs:
+  - job: Lint
+    steps:
+    - script: |
+        pip3 install -r requirements_dev.txt
+      name: Install_Req
+    - script: |
+        find . -name '*.py' -exec pylint {} \;
+      name: Pylint
+    - script: |
+        black --check --diff .
+      name: Black
+
+- stage: Terraform
+  dependsOn: []
+  jobs:
+  - job: TerraformLint
+    displayName: Terraform Linting
+    continueOnError: true
+    steps:
+    - task: TerraformCLI@0
+      inputs:
+        workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+        command: "fmt"

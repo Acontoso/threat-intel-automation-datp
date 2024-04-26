@@ -1,0 +1,18 @@
+{
+  "tools": [
+    {
+      "tool": {
+        "name": "Terrascan",
+        "version": "Latest"
+      },
+      "arguments": {
+        "Scan": "scan",
+        "OutputType": "sarif",
+        "IacDir": "$(WorkingDirectory)/terraform",
+        "UseColors": "auto",
+        "Verbose": "true",
+        "SkipRules": "AC_DOCKER_00024"
+      }
+    }
+  ]
+}

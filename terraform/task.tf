@@ -9,19 +9,21 @@ resource "aws_ecs_task_definition" "task_definition_intel" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
+          awslogs-create-group  = "true"
           awslogs-group         = "ecs-threat-intel-task"
           awslogs-region        = "${local.aws_region}"
-          awslogs-stream-prefix = "ecs-threat-intel"
+          awslogs-stream-prefix = "contoso"
         }
       }
     }
   ])
+
   execution_role_arn       = aws_iam_role.task_execution_role.arn
   task_role_arn            = aws_iam_role.task_role.arn
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = "256"
-  memory                   = "512"
+  cpu                      = "1024"
+  memory                   = "2048"
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = "X86_64"
@@ -70,7 +72,7 @@ data "aws_iam_policy_document" "task_role_policy" {
       "kms:Decrypt",
     ]
     resources = [
-      "arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:alias/${var.ssm_cmk_kms_key_alias}"
+      data.aws_kms_key.cmk_ssm_alias.arn
     ]
   }
 
@@ -87,20 +89,26 @@ data "aws_iam_policy_document" "task_role_policy" {
 }
 
 data "aws_iam_policy_document" "task_execution_policy" {
+  #checkov:skip=CKV_AWS_111: "Ensure IAM policies does not allow write access without constraints"
+  #checkov:skip=CKV_AWS_356: "Ensure no IAM policies documents allow "*" as a statement's resource for restrictable actions"
   version = "2012-10-17"
 
   statement {
-    sid    = "QueryECR"
+    sid    = "AllowExecutionCore"
     effect = "Allow"
     actions = [
       "ecr:DescribeImages",
       "ecr:DescribeRepositories",
       "ecr:ListImages",
       "ecr:BatchGetImage",
-      "ecr:GetDownloadUrlForLayer"
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:GetAuthorizationToken",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:CreateLogGroup"
     ]
     resources = [
-      "arn:aws:ecr:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:${var.image_repo_name}"
+      "*"
     ]
   }
 

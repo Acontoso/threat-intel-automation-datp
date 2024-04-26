@@ -8,6 +8,11 @@ variable "environment" {
   type        = string
 }
 
+variable "cost_centre" {
+  description = "Cost centre to apply the resources too"
+  type        = string
+}
+
 variable "eventbridge_trigger_name" {
   type        = string
   description = "Name of eventbridge trigger to start lambda function"
@@ -73,5 +78,5 @@ variable "security_group_id" {
 }
 
 variable "ecr_cmk_kms_key_alias" {
-  type        = string
+  type = string
 }
