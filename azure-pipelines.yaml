@@ -8,14 +8,14 @@ pool:
 
 variables:
   - name: ecr_registry
-    value: 12345678912.dkr.ecr.ap-southeast-2.amazonaws.com
+    value: 766012994355.dkr.ecr.ap-southeast-2.amazonaws.com
   - name: ecr_repository
     value: threat-intel-automation
   - name: account_id
-    value: 12345678912
+    value: 766012994355
   - group: OIDC AWS CICD
   - name: 'role_arn'
-    value: 'arn:aws:iam::12345678912:role/cicd-security-aws-oidc-service-connection'
+    value: 'arn:aws:iam::766012994355:role/cicd-security-aws-oidc-service-connection'
 
 stages:
 - stage: Docker

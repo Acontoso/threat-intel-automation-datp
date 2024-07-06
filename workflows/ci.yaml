@@ -6,20 +6,26 @@ pool:
 variables:
 - group: OIDC AWS CICD
 - name: 'role_arn'
-  value: 'arn:aws:iam::12345678912:role/cicd-security-aws-oidc-service-connection'
+  value: 'arn:aws:iam::766012994355:role/cicd-security-aws-oidc-service-connection'
+- name: 'service_name'
+  value: 'ti-automation'
 
 stages:
-- stage: TestDockerBuild
+- stage: DockerSecCheck
   jobs:
-  - job: Docker
+  - job: DockerContainerScan
     steps:
-    - task: Docker@2
-      displayName: Build Docker image locally to verify build
-      inputs:
-        command: build
-        dockerfile: '$(Build.SourcesDirectory)/Dockerfile'
-        buildContext: '$(Build.SourcesDirectory)'
-  - job: Scan
+    - script: |
+        docker build -f Dockerfile -t local/"$(service_name)":latest .
+      workingDirectory: $(Build.SourcesDirectory)
+      name: builddocker
+    - script: |
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.18.3
+      displayName: 'Get Trivy'
+    - script: |
+        trivy image -s "HIGH,CRITICAL" local/"$(service_name)":latest
+      displayName: 'Run Trivy'
+  - job: ScanDockerFile
     displayName: 'Run Terrascan to check for compliance'
     steps:
     - script: |
@@ -28,7 +34,7 @@ stages:
         install terrascan /usr/local/bin
       displayName: 'Get tools'
     - script: |
-        terrascan scan -i docker -f Dockerfile --output junit-xml -c terrascan.toml > $(Build.SourcesDirectory)/terrascan-results.xml
+        terrascan scan -i docker -f Dockerfile --output junit-xml -c terrascan.toml > terrascan-results.xml
         terrascan scan -i docker -f Dockerfile -o yaml -c terrascan.toml
       displayName: 'Run terrascan'
       workingDirectory: $(System.DefaultWorkingDirectory)
@@ -37,29 +43,38 @@ stages:
       condition: succeededOrFailed()
       inputs:
         testResultsFormat: "JUnit"
-        testResultsFiles: "**/terrascan-*.xml"
+        testResultsFiles: "**/*.xml"
         searchFolder: "$(Build.SourcesDirectory)"
         mergeTestResults: false
-        testRuntitle: Terrascan
+        testRuntitle: 'TI Automation Terrascan - "$(System.PullRequest.SourceCommitId)"'
         failTaskOnFailedTests: false
         publishRunAttachments: true
 
-- stage: DevOpsSecurity
+- stage: SASTIaC
   dependsOn: []
   jobs:
-  - job: DevSecOps
+  - job: TerraformSAST
     steps:
-    - task: MicrosoftSecurityDevOps@1
-      displayName: 'Microsoft Security DevOps'
-      name: 'MSSecurityDevOpsScan'
+    - script: |
+        pip3 install checkov
+      name: CheckovInstall
+    - script: |
+        checkov --quiet -d terraform --download-external-modules true
+        checkov --quiet --output junitxml -d terraform --download-external-modules true > checkov-results.xml
+      name: CheckovRun
+    - task: PublishTestResults@2
+      displayName: "Checkov Results"
+      condition: succeededOrFailed()
       inputs:
-        command: 'run'
-        policy: 'azuredevops'
-        categories: 'IaC'
-        tools: 'terrascan'
-        config: '$(System.DefaultWorkingDirectory)/new-linux.gdnconfig'
+        testResultsFormat: "JUnit"
+        testResultsFiles: "**/checkov-*.xml"
+        searchFolder: "$(Build.SourcesDirectory)"
+        mergeTestResults: false
+        testRuntitle: 'TI Automation Checkov - "$(System.PullRequest.SourceCommitId)"'
+        failTaskOnFailedTests: false
+        publishRunAttachments: true
 
-- stage: SAST
+- stage: SASTCode
   dependsOn: []
   jobs:
   - job: Dependency_Scanning_Codebase

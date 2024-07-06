@@ -26,7 +26,7 @@ jobs:
     displayName: Display output test
   - script: |
       git config --global user.name "CICD"
-      git config --global user.email "cicd@contoso.com.au"
+      git config --global user.email "cicd@api.net.au"
       git tag -a "$(GitVersion.SemVer)" -m "Deployment Release"
       git push --tags
     name: Tagging

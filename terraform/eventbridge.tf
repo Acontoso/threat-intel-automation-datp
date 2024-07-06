@@ -25,6 +25,7 @@ resource "aws_iam_role" "ecs_events" {
 }
 
 data "aws_iam_policy_document" "ecs_policy_document_eventbridge" {
+  #checkov:skip=CKV_AWS_356: "Ensure no IAM policies documents allow "*" as a statement's resource for restrictable actions"
   statement {
     sid    = "AllowEcsTask"
     effect = "Allow"
@@ -54,6 +55,15 @@ data "aws_iam_policy_document" "ecs_policy_document_eventbridge" {
       variable = "iam:PassedToService"
       values   = ["ecs-tasks.amazonaws.com"]
     }
+  }
+
+  statement {
+    sid    = "AllowTaggingECS"
+    effect = "Allow"
+    actions = [
+      "ecs:TagResource"
+    ]
+    resources = ["*"]
   }
 }
 
