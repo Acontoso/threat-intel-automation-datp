@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Automated Threat Intel - Anomali - Defender For Endpoint & Umbrella"""
+import logging
 import json
 from io import StringIO
 import concurrent.futures
@@ -17,6 +18,31 @@ CONFIDENCE = 70
 MANDIANT_FUSION_ID = "375"
 CFC_ID = "11711"
 CISA_ID = "403"
+TIME_DELTA = (datetime.now() - timedelta(hours=12)).isoformat(sep="T", timespec="auto")
+ANOMALI_ENDPOINT = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={TIME_DELTA})+AND+confidence>={CONFIDENCE}+AND+status=active+AND+type=hash+AND+subtype=SHA256+AND+(trusted_circle_id={MANDIANT_FUSION_ID}+OR+trusted_circle_id={CISA_ID}+OR+trusted_circle_id={CFC_ID})"
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_obj = {
+            "level": record.levelname,
+            "message": record.msg,
+            "timestamp": self.formatTime(record),
+        }
+        return json.dumps(log_obj)
+
+
+logger = logging.getLogger()
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+
+def anomali_header_generator() -> dict:
+    """Generate Anomali Header"""
+    username, api_key = get_anomali_creds()
+    return {"Authorization": f"apikey {username}:{api_key}"}
 
 
 def generate_access_token_payload(
@@ -50,6 +76,7 @@ def access_token_ms_sec_api(client_id: str, client_secret: str, tenant_id: str) 
         timeout=60,
     )
     if access_token_response.status_code != 200:
+        logger.error(f"[-] Failed to pull access token - {access_token_response.status_code}")
         raise Exception(
             f"[-] Failed to pull access token - {access_token_response.status_code}"
         )
@@ -89,7 +116,7 @@ def get_ms_tokens() -> str:
     ssm_client = get_boto_client("ssm")
     client_id, client_secret, tenant_id = get_ssm_params_ms(ssm_client)
     jwt_token_ms_sec_api = access_token_ms_sec_api(client_id, client_secret, tenant_id)
-    print("[+] Recieved security centre API token")
+    logger.info("[+] Recieved security centre API token")
     return jwt_token_ms_sec_api
 
 
@@ -116,11 +143,11 @@ def check_indicator(jwt_token: str, indicator: str) -> bool:
     resp = requests.get(url=endpoint, headers=header, timeout=60)
     if resp.status_code == 200:
         if len(resp.json().get("value")) > 0:
-            print(f"[+] Indicator exists: {indicator}, returning...")
+            logger.info(f"[+] Indicator exists: {indicator}, returning...")
             return True
         return False
-    print(f"[-] Failed to pull indicator - response body {resp.text}")
-    print(f"[+] Going to attempt to import IOC {indicator}")
+    logger.error(msg=f"[-] Failed to pull indicator", extra=resp.json())
+    logger.info(f"[+] Going to attempt to import IOC {indicator}")
     return False
 
 
@@ -169,12 +196,12 @@ def parse_and_send(ioc: dict, jwt_token: str) -> bool:
         url=endpoint, headers=header, data=json.dumps(payload_dict), timeout=60
     )
     if response.status_code == 200:
-        print(f"[+] Added indicator: {ioc.get('value')}")
+        logger.info(f"[+] Added indicator: {ioc.get('value')}")
         return True
-    print(
+    logger.error(
         f"[-] Response code from API call to submit indicator - {ioc_value} returned {response.status_code} status code"
     )
-    print(f"[-] {response.text}")
+    logger.error(f"[-] {response.text}")
     return False
 
 
@@ -191,32 +218,34 @@ def runner(threat_objects: list, jwt_token: str) -> None:
                 success = success + 1
             else:
                 failures = failures + 1
-    print(f"[+] Successful uploads {success}")
-    print(f"[-] Unsuccessful uploads {failures}")
+    logger.info(f"[+] Successful uploads {success}")
+    logger.info(f"[-] Unsuccessful uploads {failures}")
 
 
-def ingest_threat_intel_hash(username: str, api_key: str, jwt_token: str):
+def ingest_threat_intel_hash(jwt_token: str) -> None:
     """Main function to pull and send data to Defender for Endpoint"""
-    time_delta = (datetime.now() - timedelta(hours=12)).isoformat(
-        sep="T", timespec="auto"
-    )
-    endpoint = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={time_delta})+AND+confidence>={CONFIDENCE}+AND+status=active+AND+type=hash+AND+subtype=SHA256+AND+(trusted_circle_id={MANDIANT_FUSION_ID}+OR+trusted_circle_id={CISA_ID}+OR+trusted_circle_id={CFC_ID})"
-    header = {"Authorization": f"apikey {username}:{api_key}"}
-    response = requests.get(url=endpoint, headers=header, timeout=60)
+    header = anomali_header_generator()
+    response = requests.get(url=ANOMALI_ENDPOINT, headers=header, timeout=60)
     if response.status_code == 200:
         threat_objects = response.json().get("objects")
         total = len(threat_objects)
-        print(f"[+] Number of new threat intel to import is {total}")
+        logger.info(f"[+] Number of new threat intel to import is {total}")
         if total > 50:
             for index in range(0, total, 50):
                 threat_objects_subset = threat_objects[index : index + 50]
                 runner(threat_objects_subset, jwt_token)
                 time.sleep(60)
         else:
-            runner(threat_objects, jwt_token)
+            if total == 0:
+                logger.info("[+] No Intel to upload... returning")
+                return
+            else:
+                runner(threat_objects, jwt_token)
+                return
         return
+    logger.error(f"[-] Status code returned {response.status_code} when pulling theat intel.{response.text}")
     raise Exception(
-        f"[-] Status code returned {response.status_code} when pulling theat intel...\n{response.text}"
+        f"[-] Status code returned {response.status_code} when pulling theat intel.{response.text}"
     )
 
 
@@ -227,7 +256,7 @@ def create_payload(threat_objects: list) -> list:
         value = threat.get("value")
         source = threat.get("source")
         logged_defanged_value = ioc_fanger.defang(value)
-        print(f"[+] Adding Indicator {logged_defanged_value}")
+        logger.info(f"[+] Adding Indicator {logged_defanged_value}")
         ioc_dict = {
             "destination": value,
             "comment": f"Automated threat intel ingestion from {source} intel feeds",
@@ -267,6 +296,7 @@ def generate_umbrella_jwt(umbrella_key: str, umbrella_secret: str) -> str:
         timeout=60,
     )
     if response.status_code != 200:
+        logger.error(f"[-] Failed to pull JWT token from Umbrella... {response.text}")
         raise Exception(
             f"[-] Failed to pull JWT token from Umbrella... {response.text}"
         )
@@ -274,20 +304,19 @@ def generate_umbrella_jwt(umbrella_key: str, umbrella_secret: str) -> str:
     return token
 
 
-def ingest_threat_intel_network_ioc(username: str, api_key: str) -> None:
+def ingest_threat_intel_network_ioc() -> None:
     """Function to pull network based IOC's and upload to umbrella"""
-    time_delta = (datetime.now() - timedelta(hours=12)).isoformat(
-        sep="T", timespec="auto"
-    )
     umbrella_key, umbrella_secret = get_umbrella_api_key()
     jwt_token = generate_umbrella_jwt(umbrella_key, umbrella_secret)
-    endpoint = f"https://api.threatstream.com/api/v2/intelligence/?limit=0&q=(created_ts>={time_delta})+AND+confidence>={CONFIDENCE}+AND+status=active+AND+type=domain+AND+(trusted_circle_id={MANDIANT_FUSION_ID}+OR+trusted_circle_id={CFC_ID}+OR+trusted_circle_id={CISA_ID})"
-    header = {"Authorization": f"apikey {username}:{api_key}"}
-    response = requests.get(url=endpoint, headers=header, timeout=60)
+    header = anomali_header_generator()
+    response = requests.get(url=ANOMALI_ENDPOINT, headers=header, timeout=60)
     if response.status_code == 200:
         threat_objects = response.json().get("objects")
         total = len(threat_objects)
-        print(f"[+] Number of new network threat intel to import is {total}")
+        if total == 0:
+            logger.info("[+] No new network indicators.... returning")
+            return
+        logger.info(f"[+] Number of new network threat intel to import is {total}")
         payload = create_payload(threat_objects)
         headers_umbrella = {
             "Authorization": f"Bearer {jwt_token}",
@@ -308,14 +337,15 @@ def ingest_threat_intel_network_ioc(username: str, api_key: str) -> None:
                 case 1:
                     policy = "WEB"
             if response.status_code == 200:
-                print(
+                logger.info(
                     f"[+] Successfully imported domain IOC's into Umbrella {policy} destination list"
                 )
             else:
-                print(
+                logger.info(
                     f"[-] Failed to import domain IOC's into Umbrella {policy} destination list"
                 )
     else:
+        logger.error(f"[-] Status code returned {response.status_code} when pulling theat intel...\n{response.text}")
         raise Exception(
             f"[-] Status code returned {response.status_code} when pulling theat intel...\n{response.text}"
         )
@@ -323,10 +353,9 @@ def ingest_threat_intel_network_ioc(username: str, api_key: str) -> None:
 
 def main():
     """Main execution point"""
-    username, api_key = get_anomali_creds()
     jwt_token = get_ms_tokens()
-    ingest_threat_intel_hash(username, api_key, jwt_token)
-    ingest_threat_intel_network_ioc(username, api_key)
+    ingest_threat_intel_hash(jwt_token)
+    ingest_threat_intel_network_ioc()
 
 
 if __name__ == "__main__":
