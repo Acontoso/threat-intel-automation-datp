@@ -17,16 +17,15 @@ resource "aws_ecs_task_definition" "task_definition_intel" {
       }
     }
   ])
-
   execution_role_arn       = aws_iam_role.task_execution_role.arn
   task_role_arn            = aws_iam_role.task_role.arn
   requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = "1024"
-  memory                   = "2048"
+  network_mode             = var.ecs_networking_mode
+  cpu                      = var.ecs_vcpu_size
+  memory                   = var.ecs_memory_size
   runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "X86_64"
+    operating_system_family = var.os_platform
+    cpu_architecture        = var.cpu_architecture
   }
   tags = local.tags
 }
