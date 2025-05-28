@@ -1,13 +1,12 @@
 from datetime import datetime, timedelta, timezone
 import concurrent.futures
-import time
 import json
 from io import StringIO
-from utils.logs import configure_logging
+from code.utils.logs import logger
 import aiohttp
 import requests
 import asyncio
-from .anomali import return_header, pull_indicators
+from code.services.anomali import return_header, pull_indicators
 
 
 class MSServices:
@@ -26,7 +25,6 @@ class MSServices:
         self.client_id = client_id
         self.client_secret = client_secret
         self.tenant_id = tenant_id
-        self.logger = configure_logging()
         self.anomali_username = anomali_username
         self.anomali_apikey = anomali_apikey
         self.token = token
@@ -59,25 +57,28 @@ class MSServices:
             ) as response:
                 resp = await response.json()
         if response.status != 200:
-            self.logger.error(f"[-] Failed to pull access token - {response.status}")
+            logger.error(f"[-] Failed to pull access token - {response.status}")
             raise Exception(f"[-] Failed to pull access token - {response.status}")
         token = resp["access_token"]
         self.token = token
         return token
 
-    def check_indicator(self, indicator: str) -> bool:
-        """Check to see if indicator already exists in Defender for Endpoint"""
+    async def check_indicator(self, indicator: str) -> bool:
+        """Check to see if indicator already exists in Defender for Endpoint (async)"""
         endpoint = f"https://api.securitycenter.microsoft.com/api/indicators?$filter=indicatorValue+eq+'{indicator}'"
         header = {"Authorization": f"Bearer {self.token}"}
-        resp = requests.get(url=endpoint, headers=header, timeout=60)
-        if resp.status_code == 200:
-            if len(resp.json().get("value")) > 0:
-                self.logger.info(f"[+] Indicator exists: {indicator}")
-                return True
-            return False
-        self.logger.error(msg=f"[-] Failed to pull indicator", extra=resp.text)
-        self.logger.info(f"[+] Going to attempt to import IOC {indicator}")
-        return False
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url=endpoint, headers=header) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if len(data.get("value", [])) > 0:
+                        logger.info(f"[+] Indicator exists: {indicator}")
+                        return True
+                    return False
+                logger.error(f"[-] Failed to pull indicator: {await resp.text()}")
+                logger.info(f"[+] Going to attempt to import IOC {indicator}")
+                return False
 
     @classmethod
     def construct_payload_defender(cls, ioc: dict) -> dict:
@@ -108,10 +109,9 @@ class MSServices:
 
         return ti_payload
 
-    def parse_and_send(self, ioc: dict) -> bool:
-        """Parsed the indicator and send to Defender for Endpoint"""
+    async def parse_and_send(self, ioc: dict) -> bool:
         ioc_value = ioc.get("value")
-        exists = self.check_indicator(ioc_value)
+        exists = await self.check_indicator(ioc_value)
         if exists:
             return True
         payload_dict = self.construct_payload_defender(ioc)
@@ -120,32 +120,31 @@ class MSServices:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
         }
-        response = requests.post(
-            url=endpoint, headers=header, data=json.dumps(payload_dict), timeout=60
-        )
-        if response.status_code == 200:
-            self.logger.info(f"[+] Added indicator: {ioc.get('value')}")
-            return True
-        self.logger.error(
-            f"[-] Response code from API call to submit indicator - {ioc_value} returned {response.status_code} status code"
-        )
-        self.logger.error(f"[-] {response.text}")
-        return False
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=60)
+        ) as session:
+            async with session.post(
+                url=endpoint, headers=header, json=payload_dict
+            ) as response:
+                if response.status == 200:
+                    logger.info(f"[+] Added indicator: {ioc.get('value')}")
+                    return True
+                logger.error(
+                    f"[-] Response code from API call to submit indicator - {ioc_value} returned {response.status} status code"
+                )
+                logger.error(f"[-] {await response.text()}")
+                return False
 
     async def runner(self, threat_objects: list) -> None:
-        """Main thread pool runner"""
-        success = 0
-        failures = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-            results = executor.map(self.parse_and_send, threat_objects)
-            for result in results:
-                if result:
-                    success = success + 1
-                else:
-                    failures = failures + 1
-        self.logger.info(f"[+] Successful uploads {success}")
-        self.logger.info(f"[-] Unsuccessful uploads {failures}")
-        return
+        """Main async runner using asyncio.gather"""
+        # * unpacks the list of threat objects and runs parse_and_send concurrently
+        results = await asyncio.gather(
+            *(self.parse_and_send(ioc) for ioc in threat_objects)
+        )
+        success = sum(1 for r in results if r)
+        failures = len(results) - success
+        logger.info(f"[+] Successful uploads {success}")
+        logger.info(f"[-] Unsuccessful uploads {failures}")
 
     async def ingest_threat_intel_hash(self, anomali_endpoint: str) -> None:
         """Main function to pull and send data to Defender for Endpoint"""
@@ -153,7 +152,7 @@ class MSServices:
         await self.access_token_ms_sec_api()
         threat_objects = await pull_indicators(anomali_endpoint, header)
         total = len(threat_objects)
-        self.logger.info(f"[+] Number of new threat intel to import is {total}")
+        logger.info(f"[+] Number of new threat intel to import is {total}")
         if total > 50:
             for index in range(0, total, 50):
                 threat_objects_subset = threat_objects[index : index + 50]
@@ -161,8 +160,8 @@ class MSServices:
                 await asyncio.sleep(60)
         else:
             if total == 0:
-                self.logger.info("[+] No Intel to upload... returning")
+                logger.info("[+] No Intel to upload... returning")
                 return
             else:
-                self.runner(threat_objects)
+                await self.runner(threat_objects)
                 return
