@@ -1,14 +1,11 @@
 trigger: none
 
 pool:
-  vmImage: ubuntu-latest
-#
+  vmImage: ubuntu-22.04
+
 variables:
-- group: OIDC AWS CICD
-- name: 'role_arn'
-  value: 'arn:aws:iam::766012994355:role/cicd-security-aws-oidc-service-connection'
-- name: 'service_name'
-  value: 'ti-automation'
+  aws.rolecredential.maxduration: '3600'
+  service_name: 'ti-automation'
 
 stages:
 - stage: DockerSecCheck
@@ -16,14 +13,14 @@ stages:
   - job: DockerContainerScan
     steps:
     - script: |
-        docker build -f Dockerfile -t local/"$(service_name)":latest .
+        docker build -f Dockerfile -t tiautomation:ci .
       workingDirectory: $(Build.SourcesDirectory)
       name: builddocker
     - script: |
         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.18.3
       displayName: 'Get Trivy'
     - script: |
-        trivy image -s "HIGH,CRITICAL" local/"$(service_name)":latest
+        trivy image -s "HIGH,CRITICAL" tiautomation:ci
       displayName: 'Run Trivy'
   - job: ScanDockerFile
     displayName: 'Run Terrascan to check for compliance'
@@ -79,6 +76,9 @@ stages:
   jobs:
   - job: Dependency_Scanning_Codebase
     steps:
+    - script: |
+        python -m pip install --upgrade pip
+      name: PipUpgrade
     - task: AdvancedSecurity-Dependency-Scanning@1
   - job: Code_Scanning_Codebase
     steps:
@@ -90,42 +90,36 @@ stages:
     - task: AdvancedSecurity-Codeql-Analyze@1
     - task: AdvancedSecurity-Publish@1
 
+- stage: Unittest
+  dependsOn: []
+  jobs:
+  - job: runtest
+    steps:
+    - script: |
+        python -m venv venv
+        source venv/bin/activate
+        pip install -r requirements.txt
+        export PYTHONPATH=$(System.DefaultWorkingDirectory)
+        echo "PYTHONPATH=$PYTHONPATH"
+        python -W ignore -m unittest discover -s tests
+      name: Unittest
+      workingDirectory: '$(System.DefaultWorkingDirectory)'
+
 - stage: Terraform
   dependsOn: []
   jobs:
   - job: TerraformCI
     displayName: Terraform CI
     steps:
-    - script: |
-        export CLIENT_ID="$(client_id)"
-        export CLIENT_SECRET="$(client_secret)"
-        export TENANT_ID="$(tenant_id)"
-        export SCOPE="${CLIENT_ID}""/.default"
-        az login --service-principal --allow-no-subscriptions -u "${CLIENT_ID}" -p "${CLIENT_SECRET}" --tenant "${TENANT_ID}"
-        export ACCESS_TOKEN=$(az account get-access-token --query "accessToken" --tenant "$(tenant_id)" --scope "${SCOPE}" --output tsv)
-        echo "##vso[task.setvariable variable=ACCESS_TOKEN;]$ACCESS_TOKEN"
-      workingDirectory: '$(System.DefaultWorkingDirectory)'
-      name: aztoken
-    - script: |
-        aws sts assume-role-with-web-identity --role-arn "${{variables.role_arn}}" --region ap-southeast-2 --web-identity-token "$(ACCESS_TOKEN)" --role-session-name cicd > secrets
-        export AWS_ACCESS_KEY_ID="$(cat secrets | jq '.Credentials.AccessKeyId' --raw-output)"
-        export AWS_SECRET_ACCESS_KEY="$(cat secrets | jq  '.Credentials.SecretAccessKey' --raw-output)"
-        export AWS_SESSION_TOKEN="$(cat secrets | jq '.Credentials.SessionToken' --raw-output)"
-        echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;]$AWS_ACCESS_KEY_ID"
-        echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;]$AWS_SECRET_ACCESS_KEY"
-        echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;]$AWS_SESSION_TOKEN"
-        echo "##vso[task.setvariable variable=AWS_REGION;]ap-southeast-2"
-      workingDirectory: '$(System.DefaultWorkingDirectory)'
-      name: awstoken
-    - script: |
-        terraform init
-      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
-      name: init
-    - script: |
-        terraform validate
-      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
-      name: validate
-    - script: |
-        terraform plan
-      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
-      name: plan
+    - task: AWSShellScript@1
+      displayName: "Terraform Plan"
+      inputs:
+        awsCredentials: "weshealth-seclog"
+        regionName: "ap-southeast-2"
+        scriptType: inline
+        disableAutoCwd: true
+        inlineScript: |
+          terraform init
+          terraform validate
+          terraform plan
+        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
