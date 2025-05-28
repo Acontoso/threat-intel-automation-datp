@@ -2,9 +2,9 @@
 """Automated Threat Intel - Anomali - Defender For Endpoint & Umbrella"""
 import asyncio
 from datetime import datetime, timedelta
-from services.microsoft import MSServices
-from services.cisco import CiscoServices
-from services.aws import AWSServices
+from code.services.microsoft import MSServices
+from code.services.cisco import CiscoServices
+from code.services.aws import AWSServices
 
 REGION = "ap-southeast-2"
 UMBRELLA_DEST_LIST_IDS = ("17699844", "17699845")
