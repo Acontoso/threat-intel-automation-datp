@@ -1,8 +1,8 @@
-from utils.logs import configure_logging
+from code.utils.logs import logger
 import aiohttp
 import json
 import ioc_fanger
-from .anomali import return_header, pull_indicators
+from code.services.anomali import return_header, pull_indicators
 
 
 class CiscoServices:
@@ -19,7 +19,6 @@ class CiscoServices:
         """Init function to class"""
         self.umbrella_key = umbrella_key
         self.umbrella_secret = umbrella_secret
-        self.logger = configure_logging()
         self.token = ""
         self.dest_list = destination_lists
         self.anomali_username = anomali_username
@@ -37,7 +36,7 @@ class CiscoServices:
                 url=token_endpoint, data=data, headers=header, auth=auth
             ) as response:
                 if response.status != 200:
-                    self.logger.error(
+                    logger.error(
                         f"[-] Failed to pull JWT token from Umbrella... {response.text}"
                     )
                     raise Exception(
@@ -54,9 +53,9 @@ class CiscoServices:
         threat_objects = await pull_indicators(anomali_endpoint, header)
         total = len(threat_objects)
         if total == 0:
-            self.logger.info("[+] No new network indicators.... returning")
+            logger.info("[+] No new network indicators.... returning")
             return
-        self.logger.info(f"[+] Number of new network threat intel to import is {total}")
+        logger.info(f"[+] Number of new network threat intel to import is {total}")
         payload = await self.create_payload(threat_objects)
         headers_umbrella = {
             "Authorization": f"Bearer {jwt_token}",
@@ -77,11 +76,11 @@ class CiscoServices:
                 case 1:
                     policy = "WEB"
             if response.status == 200:
-                self.logger.info(
+                logger.info(
                     f"[+] Successfully imported domain IOC's into Umbrella {policy} destination list"
                 )
             else:
-                self.logger.info(
+                logger.info(
                     f"[-] Failed to import domain IOC's into Umbrella {policy} destination list"
                 )
 
@@ -92,7 +91,7 @@ class CiscoServices:
             value = threat.get("value")
             source = threat.get("source")
             logged_defanged_value = ioc_fanger.defang(value)
-            self.logger.info(f"[+] Adding Indicator {logged_defanged_value}")
+            logger.info(f"[+] Adding Indicator {logged_defanged_value}")
             ioc_dict = {
                 "destination": value,
                 "comment": f"Automated threat intel ingestion from {source} intel feeds",
