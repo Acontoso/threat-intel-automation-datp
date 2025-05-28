@@ -1,7 +1,5 @@
 import aiohttp
-from utils.logs import configure_logging
-
-LOGGER = configure_logging
+from code.utils.logs import logger
 
 
 def return_header(username: str, api_key: str) -> dict:
@@ -14,7 +12,7 @@ async def pull_indicators(anomali_endpoint: str, header: dict) -> dict:
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url=anomali_endpoint, headers=header) as response:
             if response.status != 200:
-                LOGGER.error(f"[-] Failed to pull JWT token from Umbrella...")
+                logger.error(f"[-] Failed to pull JWT token from Umbrella...")
                 raise Exception(f"[-] Failed to pull JWT token from Umbrella...")
             resp = await response.json()
             threat_objects = resp.get("objects")
