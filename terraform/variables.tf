@@ -80,3 +80,56 @@ variable "security_group_id" {
 variable "ecr_cmk_kms_key_alias" {
   type = string
 }
+
+variable "ecs_networking_mode" {
+  type        = string
+  description = "Networking mode used by ECS"
+}
+
+variable "ecs_vcpu_size" {
+  type        = string
+  description = "CPU allocation to ECS task"
+}
+
+variable "ecs_memory_size" {
+  type        = string
+  description = "Memory allocation to ECS task"
+}
+
+variable "os_platform" {
+  type        = string
+  description = "OS Platform that can run ECS task"
+}
+variable "cpu_architecture" {
+  type = string
+}
+
+variable "enc_string_az_client_id" {
+  type        = string
+  description = "Encrypted value for Az Client ID"
+}
+
+variable "enc_string_az_tenant_id" {
+  type        = string
+  description = "Encrypted value for Az Client Secret"
+}
+
+variable "enc_string_umbrella_id" {
+  type        = string
+  description = "Encrypted value for Umbrella ID"
+}
+
+variable "enc_string_umbrella_secret" {
+  type        = string
+  description = "Encrypted value for Umbrella Secret"
+}
+
+variable "enc_string_anomali_username" {
+  type        = string
+  description = "Encrypted value for Anomali Username"
+}
+
+variable "enc_string_anomali_apikey" {
+  type        = string
+  description = "Encrypted value for Anomali API Key"
+}
