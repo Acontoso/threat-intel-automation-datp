@@ -85,6 +85,20 @@ data "aws_iam_policy_document" "task_role_policy" {
       "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/threat-intel/*"
     ]
   }
+  
+  statement {
+    sid    = "CognitoIdentityPoolOIDC"
+    effect = "Allow"
+    actions = [
+      "cognito-identity:GetOpenIdTokenForDeveloperIdentity",
+      "cognito-identity:LookupDeveloperIdentity",
+      "cognito-identity:MergeDeveloperIdentities",
+      "cognito-identity:UnlinkDeveloperIdentity"
+    ]
+    resources = [
+      data.aws_cognito_identity_pool.identity_pool_oidc.arn
+    ]
+  }
 }
 
 data "aws_iam_policy_document" "task_execution_policy" {
@@ -138,6 +152,11 @@ resource "aws_iam_policy" "execution_task_iam_policy" {
 resource "aws_iam_role_policy_attachment" "default_policy_attachment_lambda_role" {
   role       = aws_iam_role.task_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "execution_role_managed_policy" {
+  role       = aws_iam_role.task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
 resource "aws_iam_policy_attachment" "policy_attachment_task_role" {
