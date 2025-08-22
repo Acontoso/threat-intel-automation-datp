@@ -6,6 +6,8 @@ pool:
 variables:
   aws.rolecredential.maxduration: '3600'
   service_name: 'ti-automation'
+  snyk_organization_id: 'your-snyk-organization-id'
+  snyk_project_name: 'your-snyk-project-name'
 
 stages:
 - stage: DockerSecCheck
@@ -16,36 +18,18 @@ stages:
         docker build -f Dockerfile -t tiautomation:ci .
       workingDirectory: $(Build.SourcesDirectory)
       name: builddocker
-    - script: |
-        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.18.3
-      displayName: 'Get Trivy'
-    - script: |
-        trivy image -s "HIGH,CRITICAL" tiautomation:ci
-      displayName: 'Run Trivy'
-  - job: ScanDockerFile
-    displayName: 'Run Terrascan to check for compliance'
-    steps:
-    - script: |
-        curl -L "$(curl -s https://api.github.com/repos/tenable/terrascan/releases/latest | grep -o -E "https://.+?_Linux_x86_64.tar.gz")" > terrascan.tar.gz
-        tar -xvf terrascan.tar.gz
-        install terrascan /usr/local/bin
-      displayName: 'Get tools'
-    - script: |
-        terrascan scan -i docker -f Dockerfile --output junit-xml -c terrascan.toml > terrascan-results.xml
-        terrascan scan -i docker -f Dockerfile -o yaml -c terrascan.toml
-      displayName: 'Run terrascan'
-      workingDirectory: $(System.DefaultWorkingDirectory)
-    - task: PublishTestResults@2
-      displayName: "Terrascan Results"
-      condition: succeededOrFailed()
+    - task: SnykSecurityScan@1
       inputs:
-        testResultsFormat: "JUnit"
-        testResultsFiles: "**/*.xml"
-        searchFolder: "$(Build.SourcesDirectory)"
-        mergeTestResults: false
-        testRuntitle: 'TI Automation Terrascan - "$(System.PullRequest.SourceCommitId)"'
-        failTaskOnFailedTests: false
-        publishRunAttachments: true
+        serviceConnectionEndpoint: ''
+        testType: 'container'
+        dockerImageName: 'tiautomation:ci'
+        dockerfilePath: 'Dockerfile'
+        severityThreshold: 'medium'
+        monitorWhen: 'always'
+        failOnIssues: true
+        projectName: $(snyk_project_name)
+        organization: $(snyk_organization_id)
+        failOnThreshold: 'medium'
 
 - stage: SASTIaC
   dependsOn: []
@@ -74,21 +58,31 @@ stages:
 - stage: SASTCode
   dependsOn: []
   jobs:
-  - job: Dependency_Scanning_Codebase
+  - job: Dependency_Scanning
     steps:
     - script: |
         python -m pip install --upgrade pip
       name: PipUpgrade
-    - task: AdvancedSecurity-Dependency-Scanning@1
+    - task: SnykSecurityScan@1
+      inputs:
+        serviceConnectionEndpoint: ''
+        testType: 'app'
+        severityThreshold: 'medium'
+        failOnIssues: true
+        projectName: $(snyk_project_name)
+        organization: $(snyk_organization_id)
+        failOnThreshold: 'medium' #optional, depending on CI
   - job: Code_Scanning_Codebase
     steps:
-    - task: AdvancedSecurity-Codeql-Init@1
+    - task: SnykSecurityScan@1
       inputs:
-        languages: "python"
-        querysuite: 'security-extended'
-        sourcesfolder: $(System.DefaultWorkingDirectory)/code
-    - task: AdvancedSecurity-Codeql-Analyze@1
-    - task: AdvancedSecurity-Publish@1
+        serviceConnectionEndpoint: ''
+        testType: 'code'
+        codeSeverityThreshold: 'medium'
+        failOnThreshold: 'medium'
+        failOnIssues: true
+        projectName: $(snyk_project_name)
+        organization: $(snyk_organization_id)
 
 - stage: Unittest
   dependsOn: []
