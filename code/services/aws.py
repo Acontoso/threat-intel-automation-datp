@@ -4,6 +4,9 @@ import time
 from botocore.exceptions import ClientError
 from code.utils.logs import logger
 
+IDENTITY_POOL_LOGIN = "sentinelloglambda"
+IDENTITY_POOL_ID = "ap-southeast-2:5a1433aa-088e-431e-a69e-fe0c30b580a7"
+
 
 class AWSServices:
     """Class used to store static methods used to interact with AWS SDK services"""
@@ -42,3 +45,13 @@ class AWSServices:
             else:
                 raise Exception(f"Max retries reached for parameter {param}")
         return resolved_params
+
+    @staticmethod
+    def get_token() -> str:
+        logins = {"azuread": IDENTITY_POOL_LOGIN}
+        client = boto3.client("cognito-identity")
+
+        response = client.get_open_id_token_for_developer_identity(
+            IdentityPoolId=IDENTITY_POOL_ID, Logins=logins
+        )
+        return response["Token"]
