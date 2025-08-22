@@ -4,18 +4,13 @@ resources:
     source: threat-intel-automation-version
     trigger: true
 pool:
-  vmImage: ubuntu-latest
+  vmImage: ubuntu-22.04
 
 variables:
   - name: ecr_registry
     value: 766012994355.dkr.ecr.ap-southeast-2.amazonaws.com
   - name: ecr_repository
     value: threat-intel-automation
-  - name: account_id
-    value: 766012994355
-  - group: OIDC AWS CICD
-  - name: 'role_arn'
-    value: 'arn:aws:iam::766012994355:role/cicd-security-aws-oidc-service-connection'
 
 stages:
 - stage: Docker
@@ -37,48 +32,24 @@ stages:
     - task: DockerInstaller@0
       inputs:
         dockerVersion: '17.09.0-ce'
-    - script: |
-        export CLIENT_ID="$(client_id)"
-        export CLIENT_SECRET="$(client_secret)"
-        export TENANT_ID="$(tenant_id)"
-        export SCOPE="${CLIENT_ID}""/.default"
-        az login --service-principal --allow-no-subscriptions -u "${CLIENT_ID}" -p "${CLIENT_SECRET}" --tenant "${TENANT_ID}"
-        export ACCESS_TOKEN=$(az account get-access-token --query "accessToken" --tenant "$(tenant_id)" --scope "${SCOPE}" --output tsv)
-        echo "##vso[task.setvariable variable=ACCESS_TOKEN;]$ACCESS_TOKEN"
-      workingDirectory: '$(System.DefaultWorkingDirectory)'
-      name: aztoken
-    - script: |
-        aws sts assume-role-with-web-identity --role-arn "${{variables.role_arn}}" --region ap-southeast-2 --web-identity-token "$(ACCESS_TOKEN)" --role-session-name cicd > secrets
-        export AWS_ACCESS_KEY_ID="$(cat secrets | jq '.Credentials.AccessKeyId' --raw-output)"
-        export AWS_SECRET_ACCESS_KEY="$(cat secrets | jq  '.Credentials.SecretAccessKey' --raw-output)"
-        export AWS_SESSION_TOKEN="$(cat secrets | jq '.Credentials.SessionToken' --raw-output)"
-        echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;]$AWS_ACCESS_KEY_ID"
-        echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;]$AWS_SECRET_ACCESS_KEY"
-        echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;]$AWS_SESSION_TOKEN"
-        echo "##vso[task.setvariable variable=AWS_REGION;]ap-southeast-2"
-        echo "##vso[task.setvariable variable=access_key_id;isOutput=true]$AWS_ACCESS_KEY_ID"
-        echo "##vso[task.setvariable variable=secret_access_key;isOutput=true]$AWS_SECRET_ACCESS_KEY"
-        echo "##vso[task.setvariable variable=session_token;isOutput=true]$AWS_SESSION_TOKEN"
-        echo "##vso[task.setvariable variable=region;isOutput=true]ap-southeast-2"
-      workingDirectory: '$(System.DefaultWorkingDirectory)'
-      name: awssts
-    - script: |
-        aws ecr get-login-password --region ap-southeast-2 | docker login --username AWS --password-stdin "$(ecr_registry)"
-        docker build -f Dockerfile -t "$(ecr_registry)"/"$(ecr_repository)":"$(version.version)" .
-        docker push "$(ecr_registry)"/"$(ecr_repository)":"$(version.version)"
-      workingDirectory: $(Build.SourcesDirectory)
-      name: builddocker
-  
+    - task: AWSShellScript@1
+      displayName: "Docker Build"
+      inputs:
+        awsCredentials: "weshealth-seclog"
+        disableAutoCwd: true
+        regionName: "ap-southeast-2"
+        scriptType: inline
+        inlineScript: |
+          aws ecr get-login-password --region ap-southeast-2 | docker login --username AWS --password-stdin "$(ecr_registry)"
+          docker build -f Dockerfile -t "$(ecr_registry)"/"$(ecr_repository)":"$(version.version)" .
+          docker push "$(ecr_registry)"/"$(ecr_repository)":"$(version.version)"
+        workingDirectory: $(Build.SourcesDirectory)
+
 - stage: TerraformDeploy
-  dependsOn: Docker
   jobs:
   - deployment: TerraformDependancy
     variables:
       version: $[ stageDependencies.Docker.Build_Push.outputs['version.version'] ]
-      AWS_ACCESS_KEY_ID: $[ stageDependencies.Docker.Build_Push.outputs['awssts.access_key_id'] ]
-      AWS_SECRET_ACCESS_KEY: $[ stageDependencies.Docker.Build_Push.outputs['awssts.secret_access_key'] ]
-      AWS_SESSION_TOKEN: $[ stageDependencies.Docker.Build_Push.outputs['awssts.session_token'] ]
-      AWS_REGION: $[ stageDependencies.Docker.Build_Push.outputs['awssts.region'] ]
     displayName: Deploy Terraform Dependancy
     environment: 'aws-sec-log'
     strategy:
@@ -87,15 +58,14 @@ stages:
           steps:
           - checkout: self
             persistCredentials: true
-          - script: |
-              echo "##vso[task.setvariable variable=AWS_ACCESS_KEY_ID;]$(AWS_ACCESS_KEY_ID)"
-              echo "##vso[task.setvariable variable=AWS_SECRET_ACCESS_KEY;]$(AWS_SECRET_ACCESS_KEY)"
-              echo "##vso[task.setvariable variable=AWS_SESSION_TOKEN;]$(AWS_SESSION_TOKEN)"
-              echo "##vso[task.setvariable variable=AWS_REGION;]$(AWS_REGION)"
-            workingDirectory: $(System.DefaultWorkingDirectory)
-          - script: |
-              terraform init
-            workingDirectory: $(System.DefaultWorkingDirectory)/terraform
-          - script: |
-              terraform apply -auto-approve -input=false -var "image_tag=$(version)"
-            workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+          - task: AWSShellScript@1
+            displayName: "Terraform Deploy"
+            inputs:
+              awsCredentials: "weshealth-seclog"
+              disableAutoCwd: true
+              regionName: "ap-southeast-2"
+              scriptType: inline
+              inlineScript: |
+                terraform init
+                terraform apply -auto-approve -input=false -var "image_tag=$(version)"
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
