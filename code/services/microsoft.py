@@ -1,12 +1,11 @@
 from datetime import datetime, timedelta, timezone
-import concurrent.futures
-import json
 from io import StringIO
+from azure.identity import ClientAssertionCredential
 from code.utils.logs import logger
 import aiohttp
-import requests
 import asyncio
 from code.services.anomali import return_header, pull_indicators
+from code.services.aws import AWSServices
 
 
 class MSServices:
@@ -15,7 +14,6 @@ class MSServices:
     def __init__(
         self,
         client_id: str,
-        client_secret: str,
         tenant_id: str,
         anomali_username: str,
         anomali_apikey: str,
@@ -23,45 +21,31 @@ class MSServices:
     ):
         """Init function to class"""
         self.client_id = client_id
-        self.client_secret = client_secret
         self.tenant_id = tenant_id
         self.anomali_username = anomali_username
         self.anomali_apikey = anomali_apikey
         self.token = token
 
-    def generate_access_token_payload(self, scope: str) -> str:
-        """Generate payload for access token for client credential flow"""
-        payload = (
-            "client_id="
-            + self.client_id
-            + "&scope="
-            + scope
-            + "&client_secret="
-            + self.client_secret
-            + "&grant_type=client_credentials"
-        )
-        return payload
-
-    async def access_token_ms_sec_api(self) -> str:
+    async def access_token_ms_sec_api(self) -> None:
         """Get OAuth access token to send data to Microsoft Defender 365"""
-        security_centre_scope = "https://api.securitycenter.windows.com/.default"
-        payload = self.generate_access_token_payload(security_centre_scope)
-        endpoint = (
-            "https://login.microsoftonline.com/" + self.tenant_id + "/oauth2/v2.0/token"
+        scope = "https://api.securitycenter.windows.com/.default"
+        token = ClientAssertionCredential(
+            tenant_id=self.tenant_id,
+            client_id=self.client_id,
+            func=AWSServices.get_token,
         )
-        headers = {"content-type": "application/x-www-form-urlencoded"}
-        timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                url=endpoint, data=payload, headers=headers
-            ) as response:
-                resp = await response.json()
-        if response.status != 200:
-            logger.error(f"[-] Failed to pull access token - {response.status}")
-            raise Exception(f"[-] Failed to pull access token - {response.status}")
-        token = resp["access_token"]
-        self.token = token
-        return token
+        if token:
+            try:
+                access_token = token.get_token(scope).token
+                logger.info("[+] Successfully received token from Azure AD")
+                self.token = access_token
+                return None
+            except Exception as error:
+                logger.error(f"[-] Failed to get access token from Azure AD: {error}")
+                return None
+        else:
+            logger.error("[-] Failed to get token from Cognito")
+            return None
 
     async def check_indicator(self, indicator: str) -> bool:
         """Check to see if indicator already exists in Defender for Endpoint (async)"""
