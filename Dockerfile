@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bookworm as build
+FROM python:3.13.3-slim-bookworm as build
 
 ENV PYTHONUNBUFFERED 1
 WORKDIR /usr/app
@@ -8,12 +8,12 @@ ENV PATH="/usr/app/venv/bin:$PATH"
 COPY ["requirements.txt", "./"]
 RUN pip install -r requirements.txt --no-cache-dir
 
-FROM python:3.11-slim-bookworm as runner
-RUN groupadd -g 1000 ti-runner && useradd -r -u 1000 -g ti-runner ti-runner
-WORKDIR /usr/app/venv
-RUN chown ti-runner:ti-runner /usr/app/venv
-COPY --chown=ti-runner:ti-runner --from=build /usr/app/venv ./
-COPY --chown=ti-runner:ti-runner ["./code", "./"]
+FROM python:3.13.3-slim-bookworm as runner
+RUN groupadd -g 990 ti-runner && useradd -r -u 990 -g ti-runner ti-runner
+WORKDIR /usr/app
+COPY --from=build /usr/app/venv ./venv
+COPY --chown=ti-runner:ti-runner ./code ./code
 ENV PATH="/usr/app/venv/bin:$PATH"
+ENV PYTHONPATH="/usr/app"
 USER ti-runner
-ENTRYPOINT [ "python", "./main.py"]
+ENTRYPOINT [ "python", "-m", "code.main" ]
