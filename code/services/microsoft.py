@@ -1,30 +1,41 @@
 from datetime import datetime, timedelta, timezone
 from io import StringIO
+from typing import Callable
 from azure.identity import ClientAssertionCredential
 from code.utils.logs import logger
 import aiohttp
 import asyncio
-from code.services.anomali import return_header, pull_indicators
+from code.services.anomali import AnomaliClient
 from code.services.aws import AWSServices
 
 
 class MSServices:
-    """Class used to store static methods used to interact with Microsoft services"""
+    """Reusable Microsoft Defender client."""
 
     def __init__(
         self,
         client_id: str,
         tenant_id: str,
-        anomali_username: str,
-        anomali_apikey: str,
+        anomali_client: AnomaliClient | None = None,
+        anomali_username: str | None = None,
+        anomali_apikey: str | None = None,
         token="",
     ):
         """Init function to class"""
         self.client_id = client_id
         self.tenant_id = tenant_id
-        self.anomali_username = anomali_username
-        self.anomali_apikey = anomali_apikey
+        if anomali_client:
+            self.anomali_client = anomali_client
+        elif anomali_username and anomali_apikey:
+            self.anomali_client = AnomaliClient(anomali_username, anomali_apikey)
+        else:
+            raise ValueError(
+                "Either an anomali_client or anomali credentials must be provided"
+            )
+
+        self.token_provider = AWSServices.get_token
         self.token = token
+        self.timeout = aiohttp.ClientTimeout(total=60)
 
     async def access_token_ms_sec_api(self) -> None:
         """Get OAuth access token to send data to Microsoft Defender 365"""
@@ -32,7 +43,7 @@ class MSServices:
         token = ClientAssertionCredential(
             tenant_id=self.tenant_id,
             client_id=self.client_id,
-            func=AWSServices.get_token,
+            func=self.token_provider,
         )
         if token:
             try:
@@ -47,22 +58,22 @@ class MSServices:
             logger.error("[-] Failed to get token from Cognito")
             return None
 
-    async def check_indicator(self, indicator: str) -> bool:
+    async def check_indicator(
+        self, indicator: str, session: aiohttp.ClientSession
+    ) -> bool:
         """Check to see if indicator already exists in Defender for Endpoint (async)"""
         endpoint = f"https://api.securitycenter.microsoft.com/api/indicators?$filter=indicatorValue+eq+'{indicator}'"
         header = {"Authorization": f"Bearer {self.token}"}
-        timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url=endpoint, headers=header) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if len(data.get("value", [])) > 0:
-                        logger.info(f"[+] Indicator exists: {indicator}")
-                        return True
-                    return False
-                logger.error(f"[-] Failed to pull indicator: {await resp.text()}")
-                logger.info(f"[+] Going to attempt to import IOC {indicator}")
+        async with session.get(url=endpoint, headers=header) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if len(data.get("value", [])) > 0:
+                    logger.info(f"[+] Indicator exists: {indicator}")
+                    return True
                 return False
+            logger.error(f"[-] Failed to pull indicator: {await resp.text()}")
+            logger.info(f"[+] Going to attempt to import IOC {indicator}")
+            return False
 
     @classmethod
     def construct_payload_defender(cls, ioc: dict) -> dict:
@@ -76,7 +87,7 @@ class MSServices:
         msg_str.write("Tags assigned to TI\n\n")
         source = ioc.get("source")
         indicator = ioc.get("value")
-        tags = ioc.get("tags")
+        tags = ioc.get("tags", [])
         for tag in tags:
             name = tag.get("name")
             msg_str.write(f"{name}\n")
@@ -93,9 +104,9 @@ class MSServices:
 
         return ti_payload
 
-    async def parse_and_send(self, ioc: dict) -> bool:
+    async def parse_and_send(self, ioc: dict, session: aiohttp.ClientSession) -> bool:
         ioc_value = ioc.get("value")
-        exists = await self.check_indicator(ioc_value)
+        exists = await self.check_indicator(ioc_value, session)
         if exists:
             return True
         payload_dict = self.construct_payload_defender(ioc)
@@ -104,27 +115,24 @@ class MSServices:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
         }
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=60)
-        ) as session:
-            async with session.post(
-                url=endpoint, headers=header, json=payload_dict
-            ) as response:
-                if response.status == 200:
-                    logger.info(f"[+] Added indicator: {ioc.get('value')}")
-                    return True
-                logger.error(
-                    f"[-] Response code from API call to submit indicator - {ioc_value} returned {response.status} status code"
-                )
-                logger.error(f"[-] {await response.text()}")
-                return False
+        async with session.post(
+            url=endpoint, headers=header, json=payload_dict
+        ) as response:
+            if response.status == 200:
+                logger.info(f"[+] Added indicator: {ioc.get('value')}")
+                return True
+            logger.error(
+                f"[-] Response code from API call to submit indicator - {ioc_value} returned {response.status} status code"
+            )
+            logger.error(f"[-] {await response.text()}")
+            return False
 
     async def runner(self, threat_objects: list) -> None:
         """Main async runner using asyncio.gather"""
-        # * unpacks the list of threat objects and runs parse_and_send concurrently
-        results = await asyncio.gather(
-            *(self.parse_and_send(ioc) for ioc in threat_objects)
-        )
+        async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            results = await asyncio.gather(
+                *(self.parse_and_send(ioc, session) for ioc in threat_objects)
+            )
         success = sum(1 for r in results if r)
         failures = len(results) - success
         logger.info(f"[+] Successful uploads {success}")
@@ -132,9 +140,8 @@ class MSServices:
 
     async def ingest_threat_intel_hash(self, anomali_endpoint: str) -> None:
         """Main function to pull and send data to Defender for Endpoint"""
-        header = return_header(self.anomali_username, self.anomali_apikey)
         await self.access_token_ms_sec_api()
-        threat_objects = await pull_indicators(anomali_endpoint, header)
+        threat_objects = await self.anomali_client.pull_indicators(anomali_endpoint)
         total = len(threat_objects)
         logger.info(f"[+] Number of new threat intel to import is {total}")
         if total > 50:

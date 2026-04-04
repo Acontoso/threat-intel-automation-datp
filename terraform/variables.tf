@@ -27,6 +27,12 @@ variable "image_tag" {
   default = "1.0.0"
 }
 
+variable "image_digest" {
+  type    = string
+  default = ""
+  description = "The image digest is the SHA256 hash of the docker image used for deployment"
+}
+
 variable "ecr_registry" {
   description = "ECR registry in account"
   type        = string
@@ -60,6 +66,26 @@ variable "task_execution_role" {
 variable "cluster_name" {
   type        = string
   description = "Name of ECS cluster"
+}
+
+variable "load_balancer_target_group_name" {
+  type        = string
+  description = "Name of the ALB target group used by the ECS service"
+}
+
+variable "service_desired_count" {
+  type        = number
+  description = "Desired number of ECS service tasks"
+}
+
+variable "service_discovery_namespace_name" {
+  type        = string
+  description = "Service discovery HTTP namespace for ECS Service Connect"
+}
+
+variable "aws_private_ca_arn" {
+  type        = string
+  description = "ARN of the AWS Private CA used for ECS Service Connect TLS"
 }
 
 variable "ecs_iam_role_eventbridge_name" {

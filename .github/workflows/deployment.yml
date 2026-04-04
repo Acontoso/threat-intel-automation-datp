@@ -1,11 +1,12 @@
-name: Publish
-on:
-  release:
-    types: [published]
-    
+name: Deploy
+
+# on:
+#   push:
+#     branches:
+#       - main
+
 env:
   AWS_REGION: "ap-southeast-2"
-  REPOSITORY: "ti-automation"
 
 permissions:
       id-token: write   # This is required for requesting the JWT
@@ -13,88 +14,146 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-20.04
-    outputs:
-      VERSION: ${{steps.get_version.outputs.VERSION}}
+    runs-on: ubuntu-latest
     name: Publish
+    outputs:
+      image_tag: ${{ steps.push.outputs.image_tag }}
+      image_sha: ${{ steps.push.outputs.image_sha }}
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
-    - name: Get the version
-      id: get_version
-      run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+      uses: actions/checkout@v4
+
     - name: Install AWS Signer
       run: |
         wget https://d2hvyiie56hcat.cloudfront.net/linux/amd64/installer/deb/latest/aws-signer-notation-cli_amd64.deb
         sudo dpkg -i -E aws-signer-notation-cli_amd64.deb
-    - name: configure aws credentials
-      uses: aws-actions/configure-aws-credentials@v1.7.0
+
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: arn:aws:iam::371480035879:role/github_actions_cicd
-        role-session-name: OIDC_CICD
+        role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRoleArtefact
         aws-region: ${{ env.AWS_REGION }}
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
+
     - name: Build & Push
       id: push
-      env:
-        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
       run: |
-        docker build -f Dockerfile -t ${{env.REGISTRY}}/${{env.REPOSITORY}}:${{steps.get_version.outputs.VERSION}} .
-        docker push ${{env.REGISTRY}}/${{env.REPOSITORY}}:${{steps.get_version.outputs.VERSION}}
-        IMAGE_SHA=$(aws ecr describe-images --repository-name ${{env.REPOSITORY}} --image-ids imageTag=${{steps.get_version.outputs.VERSION}} --query 'imageDetails[].imageDigest' --output text)
-        echo "::set-output name=image_sha::$IMAGE_SHA"
+        IMAGE_TAG="${GITHUB_SHA}"
+        IMAGE_URI="${secrets.REGISTRY}/${secrets.REPOSITORY}:${IMAGE_TAG}"
+
+        docker build -f Dockerfile -t "${IMAGE_URI}" .
+        docker push "${IMAGE_URI}"
+
+        IMAGE_SHA=$(aws ecr describe-images --repository-name "${secrets.REPOSITORY}" --image-ids imageTag="${IMAGE_TAG}" --query 'imageDetails[].imageDigest' --output text)
+        echo "image_sha=${IMAGE_SHA}" >> "$GITHUB_OUTPUT"
+        echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+      # AWS now supports the ability to sign your images directly when stored in ECR, referencing the AWS signer ARN to sign the image instead of doing during CICD
     - name: Sign image with key
-      env:
-        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
       run: |
         export NOTATION_USERNAME=AWS
         export NOTATION_PASSWORD=$(aws ecr get-login-password --region ap-southeast-2)
-        notation sign ${{env.REGISTRY}}/${{env.REPOSITORY}}:${{steps.get_version.outputs.VERSION}} --plugin "com.amazonaws.signer.notation.plugin" --id "arn:aws:signer:${{env.AWS_REGION}}:12345678912:/signing-profiles/container_image_signing
+        notation sign "${secrets.REGISTRY}/${secrets.REPOSITORY}:${{ steps.push.outputs.image_tag }}" --plugin "com.amazonaws.signer.notation.plugin" --id "arn:aws:signer:${{env.AWS_REGION}}:${{secrets.AWS_ACCOUNT_ID}}:/signing-profiles/container_image_signing"
+
     - name: Logout of Amazon ECR
       if: always()
-      run: docker logout ${{steps.login-ecr.outputs.registry}}
-  terraform:
-    runs-on: ubuntu-20.04
-    name: Terraform
+      run: docker logout ${{secrets.REGISTRY}}
+
+  plan-prod:
+    name: Terraform Plan - prod
     needs: publish
+    uses: ./.github/workflows/tfplan.yml
+    with:
+      environment: prod
+      image_tag: ${{ needs.publish.outputs.image_tag }}
+      image_digest: ${{ needs.publish.outputs.image_sha }}
+    secrets: inherit
+
+  apply-prod:
+    name: Terraform Apply - prod
+    needs:
+      - publish
+      - plan-prod
+    uses: ./.github/workflows/tfapply.yml
+    with:
+      environment: prod
+      image_tag: ${{ needs.publish.outputs.image_tag }}
+      image_digest: ${{ needs.publish.outputs.image_sha }}
+    secrets: inherit
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs:
+      - publish
+      - apply-prod
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      REPOSITORY: ${{ secrets.REPOSITORY }}
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-    - name: configure aws credentials
-      uses: aws-actions/configure-aws-credentials@v1.7.0
-      with:
-        role-to-assume: arn:aws:iam::123456789012:role/github_actions_cicd
-        role-session-name: OIDC_CICD
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: 1.5.3
-    - name: Terraform Init
-      id: init
-      run: terraform init
-      working-directory: terraform/
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
-    - name: Terraform Validate
-      id: validate
-      run: terraform validate -no-color
-      working-directory: terraform/
-    - name: Terraform Plan
-      id: plan
-      env:
-        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-      run: terraform plan -no-color -input=false -var "image_tag=${{needs.publish.outputs.VERSION}}"
-      continue-on-error: true
-      working-directory: terraform/
-    - name: Terraform Plan Status
-      if: steps.plan.outcome == 'failure'
-      run: exit 1
-    - name: Terraform Apply
-      env:
-        REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-      run: terraform apply -auto-approve -input=false -var "image_tag=${{needs.publish.outputs.VERSION}}"
-      working-directory: terraform/
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run semantic-release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.semantic.outputs.new_release_published == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRoleArtefact
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: steps.semantic.outputs.new_release_published == 'true'
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Retag SHA image to SemVer
+        if: steps.semantic.outputs.new_release_published == 'true'
+        env:
+          SOURCE_TAG: ${{ needs.publish.outputs.image_tag }}
+          RELEASE_TAG: ${{ steps.semantic.outputs.new_release_git_tag }}
+        run: |
+          IMAGE_MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "${REPOSITORY}" \
+            --image-ids imageTag="${SOURCE_TAG}" \
+            --query 'images[0].imageManifest' \
+            --output text)
+
+          aws ecr put-image \
+            --repository-name "${REPOSITORY}" \
+            --image-tag "${RELEASE_TAG}" \
+            --image-manifest "${IMAGE_MANIFEST}"
+
+      - name: Write release summary
+        if: steps.semantic.outputs.new_release_published == 'true'
+        run: |
+          echo "### Release Published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SemVer tag | ${{ steps.semantic.outputs.new_release_git_tag }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Source image tag (SHA) | ${{ needs.publish.outputs.image_tag }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image digest | ${{ needs.publish.outputs.image_sha }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ECR repository | ${{ secrets.REPOSITORY }} |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write no-release summary
+        if: steps.semantic.outputs.new_release_published != 'true'
+        run: |
+          echo "### No Release Published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "No semantic version was published for this run (no releasable commits detected)." >> "$GITHUB_STEP_SUMMARY"

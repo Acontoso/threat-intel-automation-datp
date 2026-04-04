@@ -3,9 +3,50 @@ resource "aws_ecs_task_definition" "task_definition_intel" {
   container_definitions = jsonencode([
     {
       name                   = "${var.container_name}"
-      image                  = "${var.ecr_registry}/${var.image_repo_name}:${var.image_tag}"
+      image                  = var.image_digest != "" ? "${var.ecr_registry}/${var.image_repo_name}@${var.image_digest}" : "${var.ecr_registry}/${var.image_repo_name}:${var.image_tag}"
+      # New task definition versions will need to be pushed with the new image tag, which should be updated in terraform.tfvars
       essential              = true
       readonlyRootFilesystem = true
+      environment = [
+        {
+          name  = "ENVIRONMENT"
+          value = var.environment
+        },
+        {
+          name  = "COST_CENTRE"
+          value = var.cost_centre
+        },
+        {
+          name  = "MS_CLIENT_ID"
+          value = var.enc_string_az_client_id
+        },
+        {
+          name  = "MS_TENANT_ID"
+          value = var.enc_string_az_tenant_id
+        },
+        {
+          name  = "UMBRELLA_ID"
+          value = var.enc_string_umbrella_id
+        },
+        {
+          name  = "UMBRELLA_SECRET"
+          value = var.enc_string_umbrella_secret
+        },
+        {
+          name  = "ANOMALI_USERNAME"
+          value = var.enc_string_anomali_username
+        },
+        {
+          name  = "ANOMALI_APIKEY"
+          value = var.enc_string_anomali_apikey
+        }
+      ]
+      portMappings = [
+        {
+          containerPort = 8080
+          hostPort      = 80
+        }
+      ]
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -102,8 +143,6 @@ data "aws_iam_policy_document" "task_role_policy" {
 }
 
 data "aws_iam_policy_document" "task_execution_policy" {
-  #checkov:skip=CKV_AWS_111: "Ensure IAM policies does not allow write access without constraints"
-  #checkov:skip=CKV_AWS_356: "Ensure no IAM policies documents allow "*" as a statement's resource for restrictable actions"
   version = "2012-10-17"
 
   statement {

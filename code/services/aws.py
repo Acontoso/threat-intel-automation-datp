@@ -8,46 +8,49 @@ IDENTITY_POOL_LOGIN = "sentinelloglambda"
 IDENTITY_POOL_ID = "ap-southeast-2:5a1433aa-088e-431e-a69e-fe0c30b580a7"
 
 
-class AWSServices:
-    """Class used to store static methods used to interact with AWS SDK services"""
+class AWSClient:
+    """Reusable client for AWS interactions needed by ingestion workflows."""
 
-    @staticmethod
-    def get_ssm_parameters(parameters: list, region: str) -> list:
-        """Get SSM parameter during runtime"""
-        ssm_client = boto3.client("ssm", region_name=region)
-        kms_client = boto3.client("kms", region_name=region)
+    def __init__(self, region: str):
+        self.region = region
+        self.ssm_client = boto3.client("ssm", region_name=region)
+        self.kms_client = boto3.client("kms", region_name=region)
+
+    def get_ssm_parameters(self, parameters: list[str]) -> list[str]:
+        """Get and decrypt SSM parameters during runtime."""
+        # Method also relies on SSM parameters being stored in encrypted form, with the same KMS key - outside of this repository.
         resolved_params = []
         for param in parameters:
             retries = 5
             while retries > 0:
                 try:
                     data = (
-                        ssm_client.get_parameter(
+                        self.ssm_client.get_parameter(
                             Name=f"/threat-intel/{param}", WithDecryption=True
                         )
                         .get("Parameter")
                         .get("Value")
                     )
                     raw_bytes = base64.b64decode(data)
-                    return_data = kms_client.decrypt(CiphertextBlob=raw_bytes)
+                    return_data = self.kms_client.decrypt(CiphertextBlob=raw_bytes)
                     unencrypted_string = return_data.get("Plaintext").decode("utf-8")
                     resolved_params.append(unencrypted_string)
                     break
-                except ClientError as e:
+                except ClientError as error:
                     retries -= 1
-                    if e.response["Error"]["Code"] == "ThrottlingException":
+                    if error.response["Error"]["Code"] == "ThrottlingException":
                         logger.error(
-                            f"[-] Throttling Exception occurred - sleeping before restart"
+                            "[-] Throttling Exception occurred - sleeping before restart"
                         )
                     else:
-                        logger.error(f"[-] Printing other error -> {e}")
+                        logger.error(f"[-] Printing other error -> {error}")
                     time.sleep(3)
             else:
                 raise Exception(f"Max retries reached for parameter {param}")
         return resolved_params
 
-    @staticmethod
-    def get_token() -> str:
+    def get_token(self) -> str:
+        # Relies on OIDC service between AWS Cognito userpool & Azure. - outside of this repository
         logins = {"azuread": IDENTITY_POOL_LOGIN}
         client = boto3.client("cognito-identity")
 
@@ -55,3 +58,15 @@ class AWSServices:
             IdentityPoolId=IDENTITY_POOL_ID, Logins=logins
         )
         return response["Token"]
+
+
+class AWSServices:
+    """Backward-compatible static facade for legacy call sites."""
+
+    @staticmethod
+    def get_ssm_parameters(parameters: list[str], region: str) -> list[str]:
+        return AWSClient(region).get_ssm_parameters(parameters)
+
+    @staticmethod
+    def get_token() -> str:
+        return AWSClient("ap-southeast-2").get_token()

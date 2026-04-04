@@ -1,6 +1,0 @@
-[severity]
-level = "medium"
-[rules]
-    skip-rules = [
-        "AC_DOCKER_00024"
-    ]
