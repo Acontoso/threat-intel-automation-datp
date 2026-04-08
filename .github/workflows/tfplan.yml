@@ -19,14 +19,12 @@ on:
 env:
   AWS_REGION: ap-southeast-2
 
-
 permissions:
-      id-token: write   # This is required for requesting the JWT
-      contents: read    # This is required for actions/checkout
+      id-token: write 
+      contents: read
 
-# Prevent multiple plans running at once
 concurrency:
-  group: deploy-${{ inputs.environment }}
+  group: plan-${{ inputs.environment }}
   cancel-in-progress: false
 
 jobs:
@@ -46,7 +44,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRole-${{ inputs.environment }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRole
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Set up Terraform
@@ -81,6 +79,7 @@ jobs:
 
           # Surface plan exit code for summary
           echo "tf_exit_code=${PIPESTATUS[0]}" >> $GITHUB_ENV
+
       - name: Write plan to job summary
         if: always()
         run: |

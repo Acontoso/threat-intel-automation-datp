@@ -20,10 +20,9 @@ env:
   AWS_REGION: ap-southeast-2
 
 permissions:
-      id-token: write   # This is required for requesting the JWT
-      contents: read    # This is required for actions/checkout
+      id-token: write
+      contents: read
 
-# Prevent multiple deployments running at once
 concurrency:
   group: deploy-${{ inputs.environment }}
   cancel-in-progress: false
@@ -35,17 +34,6 @@ jobs:
     environment: ${{ inputs.environment }}
 
     steps:
-      - name: Validate environment input
-        run: |
-          case "${{ inputs.environment }}" in
-            dev|preprod|prod)
-              echo "Environment is valid: ${{ inputs.environment }}"
-              ;;
-            *)
-              echo "Invalid environment: ${{ inputs.environment }}"
-              exit 1
-              ;;
-          esac
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,7 +41,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRole-${{ inputs.environment }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRole
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Set up Terraform
@@ -92,7 +80,7 @@ jobs:
           PLAN=$(cat terraform/apply_output.txt)
           TRUNCATED=${PLAN:0:60000}
 
-          echo "### 📋 Terraform Apply — \`${{ inputs.environment }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "### Terraform Apply — \`${{ inputs.environment }}\`" >> $GITHUB_STEP_SUMMARY
           echo ""                                                        >> $GITHUB_STEP_SUMMARY
           echo "| Key | Value |"                                         >> $GITHUB_STEP_SUMMARY
           echo "|-----|-------|"                                         >> $GITHUB_STEP_SUMMARY

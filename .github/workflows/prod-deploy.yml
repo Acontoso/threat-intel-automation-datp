@@ -1,0 +1,144 @@
+name: Promote to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "Dev image tag/SHA to promote (e.g., commit SHA)"
+        required: true
+        type: string
+      release_type:
+        description: "Release type if you want to override semantic versioning"
+        required: false
+        type: choice
+        options:
+          - auto
+          - major
+          - minor
+          - patch
+        default: auto
+
+env:
+  AWS_REGION: "ap-southeast-2"
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  semantic-release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.semantic.outputs.new_release_git_tag }}
+      new_major: ${{ steps.semantic.outputs.new_release_major }}
+      new_minor: ${{ steps.semantic.outputs.new_release_minor }}
+      new_patch: ${{ steps.semantic.outputs.new_release_patch }}
+      version_published: ${{ steps.semantic.outputs.new_release_published }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run semantic-release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  retag-image:
+    name: Retag Image to SemVer
+    runs-on: ubuntu-latest
+    needs: semantic-release
+    if: needs.semantic-release.outputs.version_published == 'true'
+    outputs:
+      image_digest: ${{ steps.source-image.outputs.digest }}
+    env:
+      REPOSITORY: ${{ secrets.REPOSITORY }}
+      SOURCE_TAG: ${{ inputs.source_tag }}
+      RELEASE_TAG: ${{ needs.semantic-release.outputs.new_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRoleArtefact
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Get image digest from source tag
+        id: source-image
+        run: |
+          IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name "${REPOSITORY}" \
+            --image-ids imageTag="${SOURCE_TAG}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          echo "digest=${IMAGE_DIGEST}" >> $GITHUB_OUTPUT
+
+      - name: Retag SHA image to SemVer
+        run: |
+          IMAGE_MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "${REPOSITORY}" \
+            --image-ids imageTag="${SOURCE_TAG}" \
+            --query 'images[0].imageManifest' \
+            --output text)
+
+          aws ecr put-image \
+            --repository-name "${REPOSITORY}" \
+            --image-tag "${RELEASE_TAG}" \
+            --image-manifest "${IMAGE_MANIFEST}"
+
+      - name: Logout of Amazon ECR
+        if: always()
+        run: docker logout ${{secrets.REGISTRY}} || true
+
+      - name: Write retag summary
+        run: |
+          echo "### Image Retagged to SemVer" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Source tag (SHA) | \`${SOURCE_TAG}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SemVer tag | \`${RELEASE_TAG}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image digest | \`${{ steps.source-image.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+  plan-prod:
+    name: Terraform Plan - Prod
+    runs-on: ubuntu-latest
+    needs:
+      - semantic-release
+      - retag-image
+    if: needs.semantic-release.outputs.version_published == 'true'
+    uses: ./.github/workflows/tfplan.yml
+    with:
+      environment: prod
+      image_tag: ${{ needs.semantic-release.outputs.new_version }}
+      image_digest: ${{ needs.retag-image.outputs.image_digest }}
+    secrets: inherit
+
+  apply-prod:
+    name: Terraform Apply - Prod
+    runs-on: ubuntu-latest
+    needs:
+      - semantic-release
+      - retag-image
+      - plan-prod
+    if: needs.semantic-release.outputs.version_published == 'true'
+    uses: ./.github/workflows/tfapply.yml
+    with:
+      environment: prod
+      image_tag: ${{ needs.semantic-release.outputs.new_version }}
+      image_digest: ${{ needs.retag-image.outputs.image_digest }}
+    secrets: inherit
+

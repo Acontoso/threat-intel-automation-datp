@@ -1,0 +1,84 @@
+name: Deploy
+
+# on:
+#   push:
+#     branches:
+#       - main
+
+env:
+  AWS_REGION: "ap-southeast-2"
+
+permissions:
+      id-token: write   # This is required for requesting the JWT
+      contents: read    # This is required for actions/checkout
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    name: Publish
+    outputs:
+      image_tag: ${{ steps.push.outputs.image_tag }}
+      image_sha: ${{ steps.push.outputs.image_sha }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install AWS Signer
+      run: |
+        wget https://d2hvyiie56hcat.cloudfront.net/linux/amd64/installer/deb/latest/aws-signer-notation-cli_amd64.deb
+        sudo dpkg -i -E aws-signer-notation-cli_amd64.deb
+
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRoleArtefact
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build & Push
+      id: push
+      run: |
+        IMAGE_TAG="${GITHUB_SHA}"
+        IMAGE_URI="${secrets.REGISTRY}/${secrets.REPOSITORY}:${IMAGE_TAG}"
+
+        docker build -f Dockerfile -t "${IMAGE_URI}" .
+        docker push "${IMAGE_URI}"
+
+        IMAGE_SHA=$(aws ecr describe-images --repository-name "${secrets.REPOSITORY}" --image-ids imageTag="${IMAGE_TAG}" --query 'imageDetails[].imageDigest' --output text)
+        echo "image_sha=${IMAGE_SHA}" >> "$GITHUB_OUTPUT"
+        echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+      # AWS now supports the ability to sign your images directly when stored in ECR, referencing the AWS signer ARN to sign the image instead of doing during CICD
+    - name: Sign image with key
+      run: |
+        export NOTATION_USERNAME=AWS
+        export NOTATION_PASSWORD=$(aws ecr get-login-password --region ap-southeast-2)
+        notation sign "${secrets.REGISTRY}/${secrets.REPOSITORY}:${{ steps.push.outputs.image_tag }}" --plugin "com.amazonaws.signer.notation.plugin" --id "arn:aws:signer:${{env.AWS_REGION}}:${{secrets.AWS_ACCOUNT_ID}}:/signing-profiles/container_image_signing"
+
+    - name: Logout of Amazon ECR
+      if: always()
+      run: docker logout ${{secrets.REGISTRY}}
+
+  plan-dev:
+    name: Terraform Plan - Dev
+    needs: publish
+    uses: ./.github/workflows/tfplan.yml
+    with:
+      environment: dev
+      image_tag: ${{ needs.publish.outputs.image_tag }}
+      image_digest: ${{ needs.publish.outputs.image_sha }}
+    secrets: inherit
+
+  apply-dev:
+    name: Terraform Apply - Dev
+    needs:
+      - publish
+      - plan-dev
+    uses: ./.github/workflows/tfapply.yml
+    with:
+      environment: dev
+      image_tag: ${{ needs.publish.outputs.image_tag }}
+      image_digest: ${{ needs.publish.outputs.image_sha }}
+    secrets: inherit
