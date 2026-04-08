@@ -67,7 +67,7 @@ jobs:
         id: plan
         working-directory: terraform
         run: |
-          terraform apply --auto-approve \
+          terraform apply -auto-approve \
             -var-file="environments/${{ inputs.environment }}.tfvars" \
             -var "image_tag=${{ inputs.image_tag }}" \
             -var "image_digest=${{ inputs.image_digest }}" \
