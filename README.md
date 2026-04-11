@@ -88,8 +88,117 @@ They provide several types of controls:
 - Sensitive information filters: Detect and block or mask sensitive data (like PII & PHI).
 
 ## Infrastructure
-The following assumptions around landing zone and core infrastructure in AWS are:
-- VPC and auxilliary VPC services that enable public & private subnets across all availability zones across region are deployed.
-- AWS private CA configured to enable ECS service connect mesh, ensures transport encryption between ALB & ECS service running strands AI agent.
-- KMS keys used to encrypt artefacts such as SSM parameters, and ECR images.
-- The bedrock components (AWS provider not mature yet - Agentcore Memory, Model ARN & Guardrails). Build these outside of terraform and reference in variables.
+
+This service is designed to run on AWS ECS Fargate behind an ALB, with TLS-enabled ECS Service Connect and externalized runtime configuration.
+
+### Runtime Topology
+
+- **ALB -> ECS Service (Fargate)** for external ingress and container runtime.
+- **ECS Service Connect** for service-to-service routing and mTLS in the service mesh.
+- **CloudWatch Logs** for application and Service Connect logs.
+- **SSM Parameter Store + KMS** for encrypted runtime secrets.
+- **Amazon Bedrock + AgentCore Memory** for model inference, guardrails, and short-term session memory.
+
+### Terraform Scope In This Repository
+
+Terraform in this repo manages the application layer:
+
+- ECS task definition and IAM task/execution roles
+- ECS service deployment configuration
+- Service Connect namespace/logging/tls wiring
+- SSM parameter resources (module-driven)
+
+Foundational components are expected to exist already:
+
+- VPC, subnets, route tables, NAT/egress paths
+- Security group baselines and ALB listeners
+- ECS cluster
+- AWS Private CA
+- KMS keys for SSM/ECR/Service Connect TLS
+- Terraform backend resources (S3 state bucket, lock table)
+
+### Security Controls
+
+- **Identity and Access**: ECS task and execution roles are separated by responsibility.
+- **Secrets**: Sensitive values should be stored in SSM SecureString encrypted by KMS.
+- **Transport Security**: Service Connect uses Private CA-issued certificates and KMS key material.
+- **Model Safety**: Bedrock Guardrails are configured and passed at runtime.
+
+### Bedrock / AgentCore Dependencies
+
+Current AWS provider maturity means some AI resources are created outside Terraform and referenced as inputs:
+
+- `bedrock_model_arn`
+- `bedrock_agentcore_memory_arn`
+- `bedrock_guardrail_arn`
+- `AGENTCORE_MEMORY_SHORT_ID` runtime env value
+
+### Key Infrastructure Inputs
+
+Important variables for deployment include:
+
+- compute/networking: `service_desired_count`, `subnet_ids`, `security_group_id`, `container_port`
+- service mesh: `service_discovery_namespace_name`, `service_discovery_name`, `client_alias_dns_name`
+- tls/logging: `aws_private_ca_arn`, `ca_cmk_kms_key_alias`, `ecs_service_logs_prefix`
+- image/runtime: `ecr_registry`, `image_repo_name`, `image_tag` or `image_digest`
+
+## CI/CD Process
+
+The recommended CI/CD flow is **build once, promote immutably**.
+
+### 1. Continuous Integration (Pull Request)
+
+On PRs:
+
+- run linting and formatting checks
+- run unit tests
+- run Terraform validation (`terraform fmt -check`, `terraform validate`)
+- optionally run security scans (dependency and image scan)
+
+Goal: block merge if quality/security gates fail.
+
+### 2. Build and Publish (Main Branch)
+
+On merge to `main`:
+
+1. Build Docker image.
+2. Push image to ECR with commit SHA tag.
+3. Capture immutable image digest (`sha256:...`).
+4. Publish deployment metadata (digest, tag, commit).
+
+Use the image **digest** for deployments to guarantee immutable runtime behavior.
+
+### 3. Deploy (Terraform Apply)
+
+Deployment job should:
+
+1. Download build metadata from the publish step.
+2. Run Terraform plan/apply with environment-specific variables.
+3. Inject image digest and runtime inputs (Bedrock ARNs, memory IDs, auth env vars).
+4. Wait for ECS service stabilization.
+
+ECS circuit breaker should remain enabled for automatic rollback on failed deployments.
+
+### 4. Release / Promotion
+
+If you use semantic versioning:
+
+- create SemVer tag **after successful deploy**
+- retag already-published digest in ECR
+
+This preserves traceability and avoids rebuilding artifacts for release labels.
+
+### 5. Post-Deploy Verification
+
+Minimum smoke checks:
+
+- health or readiness endpoint (if exposed)
+- authenticated call to `/threat-intel-streaming`
+- CloudWatch log ingestion and error-rate checks
+- service desired/running task count convergence
+
+### 6. Rollback Strategy
+
+- Prefer rollback by reverting ECS task definition image digest to last known-good release.
+- Keep previous N deployment digests indexed in release metadata.
+- Use Terraform state + deployment metadata as source of truth for recovery.
