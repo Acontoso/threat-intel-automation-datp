@@ -4,7 +4,6 @@ resource "aws_ecs_task_definition" "task_definition_intel" {
     {
       name                   = "${var.container_name}"
       image                  = var.image_digest != "" ? "${var.ecr_registry}/${var.image_repo_name}@${var.image_digest}" : "${var.ecr_registry}/${var.image_repo_name}:${var.image_tag}"
-      # New task definition versions will need to be pushed with the new image tag, which should be updated in terraform.tfvars
       essential              = true
       readonlyRootFilesystem = true
       environment = [
@@ -13,47 +12,29 @@ resource "aws_ecs_task_definition" "task_definition_intel" {
           value = var.environment
         },
         {
-          name  = "COST_CENTRE"
-          value = var.cost_centre
+          name  = "BEDROCK_MODEL_ID"
+          value = ""
         },
         {
-          name  = "MS_CLIENT_ID"
-          value = var.enc_string_az_client_id
+          name  = "GUARDRAIL_ID"
+          value = ""
         },
         {
-          name  = "MS_TENANT_ID"
-          value = var.enc_string_az_tenant_id
-        },
-        {
-          name  = "UMBRELLA_ID"
-          value = var.enc_string_umbrella_id
-        },
-        {
-          name  = "UMBRELLA_SECRET"
-          value = var.enc_string_umbrella_secret
-        },
-        {
-          name  = "ANOMALI_USERNAME"
-          value = var.enc_string_anomali_username
-        },
-        {
-          name  = "ANOMALI_APIKEY"
-          value = var.enc_string_anomali_apikey
+          name  = "AGENTCORE_MEMORY_SHORT_ID"
+          value = ""
         }
       ]
       portMappings = [
         {
-          containerPort = 8080
-          hostPort      = 80
+          containerPort = 8000
         }
       ]
       logConfiguration = {
         logDriver = "awslogs"
         options = {
           awslogs-create-group  = "true"
-          awslogs-group         = "ecs-threat-intel-task"
-          awslogs-region        = "${local.aws_region}"
-          awslogs-stream-prefix = "contoso"
+          awslogs-group         = "ecs-intel-task-logs"
+          awslogs-region        = "ap-southeast-2"
         }
       }
     }
@@ -68,7 +49,7 @@ resource "aws_ecs_task_definition" "task_definition_intel" {
     operating_system_family = var.os_platform
     cpu_architecture        = var.cpu_architecture
   }
-  tags = local.tags
+  tags = var.tags
 }
 
 data "aws_iam_policy_document" "trust_policy_document_ecs" {
@@ -93,53 +74,76 @@ data "aws_iam_policy_document" "trust_policy_document_ecs" {
 resource "aws_iam_role" "task_role" {
   name               = var.task_role
   assume_role_policy = data.aws_iam_policy_document.trust_policy_document_ecs.json
-  tags               = local.tags
+  tags               = var.tags
 }
 
 resource "aws_iam_role" "task_execution_role" {
   name               = var.task_execution_role
   assume_role_policy = data.aws_iam_policy_document.trust_policy_document_ecs.json
-  tags               = local.tags
+  tags               = var.tags
 }
 
 data "aws_iam_policy_document" "task_role_policy" {
   version = "2012-10-17"
 
   statement {
-    sid    = "AllowKMS"
+    sid    = "AllowKMSDecrypt"
     effect = "Allow"
     actions = [
       "kms:Decrypt",
     ]
     resources = [
-      data.aws_kms_key.cmk_ssm_alias.arn
+      "arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:alias/${var.ssm_cmk_kms_key_alias}"
     ]
   }
 
   statement {
-    sid    = "AllowSSM"
+    sid    = "AllowSSMGetParameters"
     effect = "Allow"
     actions = [
       "ssm:GetParameter*"
     ]
     resources = [
-      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/threat-intel/*"
+      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/intel-agent/*"
+    ]
+  }
+
+  statement {
+    sid    = "AllowModelInvoke"
+    effect = "Allow"
+    actions = [
+      "bedrock:InvokeModelWithResponseStream",
+      "bedrock:InvokeModel"
+    ]
+    resources = [
+      var.bedrock_model_arn
+    ]
+  }
+
+  statement {
+    sid    = "AllowMemory"
+    effect = "Allow"
+    actions = [
+      "bedrock-agentcore:GetEvent",
+      "bedrock-agentcore:ListEvents",
+      "bedrock-agentcore:RetrieveMemoryRecords"
+    ]
+    resources = [
+      var.bedrock_agentcore_memory_arn
+    ]
+  }
+
+  statement {
+    sid    = "ApplyGuardrail"
+    effect = "Allow"
+    actions = [
+      "bedrock:ApplyGuardrail"
+    ]
+    resources = [
+      var.bedrock_guardrail_arn
     ]
   }
   
-  statement {
-    sid    = "CognitoIdentityPoolOIDC"
-    effect = "Allow"
-    actions = [
-      "cognito-identity:GetOpenIdTokenForDeveloperIdentity",
-      "cognito-identity:LookupDeveloperIdentity",
-      "cognito-identity:MergeDeveloperIdentities",
-      "cognito-identity:UnlinkDeveloperIdentity"
-    ]
-    resources = [
-      data.aws_cognito_identity_pool.identity_pool_oidc.arn
-    ]
-  }
 }
 
 data "aws_iam_policy_document" "task_execution_policy" {
@@ -149,18 +153,25 @@ data "aws_iam_policy_document" "task_execution_policy" {
     sid    = "AllowExecutionCore"
     effect = "Allow"
     actions = [
-      "ecr:DescribeImages",
-      "ecr:DescribeRepositories",
-      "ecr:ListImages",
-      "ecr:BatchGetImage",
-      "ecr:GetDownloadUrlForLayer",
-      "ecr:GetAuthorizationToken",
-      "logs:CreateLogStream",
       "logs:PutLogEvents",
-      "logs:CreateLogGroup"
+      "logs:CreateLogStream",
+      "ecr:GetAuthorizationToken"
     ]
     resources = [
       "*"
+    ]
+  }
+
+  statement {
+    sid    = "AllowExecutionPull"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage"
+    ]
+    resources = [
+      "arn:aws:ecr:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:repository/*"
     ]
   }
 
@@ -179,23 +190,18 @@ data "aws_iam_policy_document" "task_execution_policy" {
 resource "aws_iam_policy" "task_iam_policy" {
   name   = "${var.task_role}-policy"
   policy = data.aws_iam_policy_document.task_role_policy.json
-  tags   = local.tags
+  tags   = var.tags
 }
 
 resource "aws_iam_policy" "execution_task_iam_policy" {
   name   = "${var.task_execution_role}-policy"
   policy = data.aws_iam_policy_document.task_execution_policy.json
-  tags   = local.tags
+  tags   = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "default_policy_attachment_lambda_role" {
   role       = aws_iam_role.task_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-resource "aws_iam_role_policy_attachment" "execution_role_managed_policy" {
-  role       = aws_iam_role.task_execution_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
 resource "aws_iam_policy_attachment" "policy_attachment_task_role" {

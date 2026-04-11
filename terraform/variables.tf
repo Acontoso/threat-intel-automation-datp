@@ -159,3 +159,65 @@ variable "enc_string_anomali_apikey" {
   type        = string
   description = "Encrypted value for Anomali API Key"
 }
+
+variable "bedrock_model_arn" {
+  type        = string
+  description = "ARN of the Bedrock model used by the Strands agent"
+}
+
+variable "bedrock_agentcore_memory_arn" {
+  type        = string
+  description = "ARN of the Bedrock AgentCore memory used by the Strands agent"
+}
+
+variable "bedrock_guardrail_arn" {
+  type        = string
+  description = "ARN of the Bedrock guardrail used by the Strands agent"
+}
+
+variable "service_discovery_name" {
+  type        = string
+  description = "Service Connect discovery name for the ECS service"
+}
+
+variable "client_alias_dns_name" {
+  type        = string
+  description = "Service Connect client alias DNS name"
+}
+
+variable "container_port" {
+  type        = number
+  description = "Container port exposed by the ECS service"
+}
+
+variable "ecs_service_logs_prefix" {
+  type        = string
+  description = "CloudWatch log group name for ECS service logs"
+  default     = "/ecs/threat-intel/logs"
+}
+
+variable "ca_cmk_kms_key_alias" {
+  type        = string
+  description = "KMS key alias used by ECS Service Connect TLS"
+}
+
+variable "bake_time_in_minutes" {
+  type        = number
+  description = "Bake time for ECS deployment strategy in minutes"
+  default     = 60
+}
+
+variable "parameters" {
+  description = "Map of SSM parameters to create"
+  type = map(object({
+    name        = string
+    description = string
+    value       = string
+  }))
+  default = {}
+}
+
+variable "kms_key_id" {
+  description = "KMS key ID used to encrypt SSM parameters"
+  type        = string
+}

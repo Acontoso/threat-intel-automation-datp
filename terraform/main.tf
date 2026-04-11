@@ -1,18 +1,17 @@
-provider "aws" {
-  region = local.aws_region
-}
-data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
-
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+locals {
+  tags = merge(
+    {
+      "env"        = "${var.environment}"
+      "terraform"  = "true"
+      "repourl"    = "${var.source_code_repo_url}"
+      "service"    = "threat-intel-agent"
+      "author"     = "alex skoro"
     }
-  }
-  backend "s3" {
-    bucket = "security-terraform-state-weshealth"
-    key    = "statefiles/ti-runner"
-  }
+  )
+  aws_region = "ap-southeast-2"
 }
+
+data "aws_ecs_cluster" "ecs_threat_intel" {
+  cluster_name = var.cluster_name
+}
+

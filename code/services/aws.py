@@ -4,9 +4,6 @@ import time
 from botocore.exceptions import ClientError
 from code.utils.logs import logger
 
-IDENTITY_POOL_LOGIN = "sentinelloglambda"
-IDENTITY_POOL_ID = "ap-southeast-2:5a1433aa-088e-431e-a69e-fe0c30b580a7"
-
 
 class AWSClient:
     """Reusable client for AWS interactions needed by ingestion workflows."""
@@ -18,7 +15,6 @@ class AWSClient:
 
     def get_ssm_parameters(self, parameters: list[str]) -> list[str]:
         """Get and decrypt SSM parameters during runtime."""
-        # Method also relies on SSM parameters being stored in encrypted form, with the same KMS key - outside of this repository.
         resolved_params = []
         for param in parameters:
             retries = 5
@@ -26,7 +22,7 @@ class AWSClient:
                 try:
                     data = (
                         self.ssm_client.get_parameter(
-                            Name=f"/threat-intel/{param}", WithDecryption=True
+                            Name=f"/recorded-futures/{param}", WithDecryption=True
                         )
                         .get("Parameter")
                         .get("Value")
@@ -48,25 +44,3 @@ class AWSClient:
             else:
                 raise Exception(f"Max retries reached for parameter {param}")
         return resolved_params
-
-    def get_token(self) -> str:
-        # Relies on OIDC service between AWS Cognito userpool & Azure. - outside of this repository
-        logins = {"azuread": IDENTITY_POOL_LOGIN}
-        client = boto3.client("cognito-identity")
-
-        response = client.get_open_id_token_for_developer_identity(
-            IdentityPoolId=IDENTITY_POOL_ID, Logins=logins
-        )
-        return response["Token"]
-
-
-class AWSServices:
-    """Backward-compatible static facade for legacy call sites."""
-
-    @staticmethod
-    def get_ssm_parameters(parameters: list[str], region: str) -> list[str]:
-        return AWSClient(region).get_ssm_parameters(parameters)
-
-    @staticmethod
-    def get_token() -> str:
-        return AWSClient("ap-southeast-2").get_token()

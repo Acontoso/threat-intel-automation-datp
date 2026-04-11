@@ -1,30 +1,30 @@
 resource "aws_ecs_service" "threat_intel_service" {
-  name            = "threat-intel-service"
-  cluster         = data.aws_ecs_cluster.ecs_threat_intel.id
-  task_definition = aws_ecs_task_definition.task_definition_intel.arn
-  desired_count   = var.service_desired_count
-  force_new_deployment = true
-  launch_type = "FARGATE"
+  name                    = "threat-intel-service"
+  cluster                 = data.aws_ecs_cluster.ecs_threat_intel.id
+  task_definition         = aws_ecs_task_definition.task_definition_intel.arn
+  desired_count           = var.service_desired_count
+  force_new_deployment    = true
+  launch_type             = "FARGATE"
   enable_ecs_managed_tags = true
-  enable_execute_command = false
-  platform_version = "LATEST"
+  enable_execute_command  = false
+  platform_version        = "LATEST"
   network_configuration {
     assign_public_ip = false
-    security_groups = var.security_group_id
-    subnets = var.subnet_ids
+    security_groups  = var.security_group_id
+    subnets          = var.subnet_ids
   }
   deployment_circuit_breaker {
-    enable = true
+    enable   = true
     rollback = true
   }
   deployment_configuration {
-    bake_time_in_minutes = 60
-    strategy = "ROLLING"
+    bake_time_in_minutes = var.bake_time_in_minutes
+    strategy             = "ROLLING"
   }
   load_balancer {
-    container_name = aws_ecs_task_definition.task_definition_intel.container_definitions[0].name
-    container_port = aws_ecs_task_definition.task_definition_intel.container_definitions[0].portMappings[0].containerPort
-    target_group_arn = data.aws_lb_target_group.target_group_ecs_service.arn # Health Check will be done against service connect contianer port.
+    container_name   = aws_ecs_task_definition.task_definition_intel.container_definitions[0].name
+    container_port   = aws_ecs_task_definition.task_definition_intel.container_definitions[0].portMappings[0].containerPort
+    target_group_arn = var.target_group_arn # Health Check will be done against service connect container port
   }
   service_connect_configuration {
     enabled   = true
@@ -46,25 +46,26 @@ resource "aws_ecs_service" "threat_intel_service" {
 
     service {
       port_name      = "http"
-      discovery_name = "threat_intel_service"
+      discovery_name = var.service_discovery_name
 
       client_alias {
-        dns_name = "tiservice"
-        port     = 8080
+        dns_name = var.client_alias_dns_name
+        port     = var.container_port
       }
       tls {
-        kms_key               = data.aws_kms_key.cmk_ca_alias.arn
+        kms_key = "arn:aws:kms:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:alias/${var.ca_cmk_kms_key_alias}"
         issuer_cert_authority {
           aws_pca_authority_arn = var.aws_private_ca_arn
         }
       }
     }
   }
-  tags = local.tags
+  tags = var.tags
 }
 
 resource "aws_cloudwatch_log_group" "cloudwatch_log_group_threat_intel" {
-  name = "/ecs/threat-intel/logs"
+  name = var.ecs_service_logs_prefix
+  retention_in_days = 30
 }
 
 resource "aws_service_discovery_http_namespace" "service_discovery_http_namespace" {

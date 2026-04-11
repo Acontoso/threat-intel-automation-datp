@@ -1,124 +1,95 @@
 # Threat Intel Automation
 
-Containerized threat-intel ingestion service that pulls indicators from Anomali and pushes controls into:
+FastAPI service for streaming threat-intelligence analysis with Strands Agents, Amazon Bedrock, and Amazon Bedrock AgentCore Memory.
 
-- Microsoft Defender for Endpoint (file hash IOCs)
-- Cisco Umbrella (domain IOCs)
+The service:
 
-The service is exposed via FastAPI and is deployed to AWS ECS Fargate using Terraform.
+- Authenticates callers with Microsoft Entra ID access tokens
+- Extracts actor identity from token claims
+- Persists conversation state through AgentCore Memory session management
+- Streams model output back to clients in real time
+- Uses external threat-intel tools (Open Source Malware and Recorded Future)
 
-## High-Level Flow
+## Architecture
 
-1. API call hits webhook endpoint.
-2. Orchestrator loads credentials (SSM + KMS decrypt), with in-memory TTL cache.
-3. Service clients pull indicators from Anomali.
-4. Microsoft and Cisco integrations run concurrently.
-5. JSON logs are emitted to stdout for ECS/CloudWatch.
+1. Client sends a request to the streaming endpoint.
+2. FastAPI validates the Entra Bearer token.
+3. App extracts actor ID from token (`oid`, fallback `sub`).
+4. Session ID is resolved from `X-Session-Id` header or generated server-side.
+5. A Strands `Agent` is built with:
+   - shared startup clients (model + tool clients)
+   - request-scoped AgentCore memory session manager (`memory_id`, `session_id`, `actor_id`)
+6. Response is streamed token-by-token to the caller.
 
 ## API
 
-- Health: `GET /health`
-- Trigger ingestion: `POST /webhook/ingest`
+### POST `/threat-intel-streaming`
 
-Example request:
+Streams a threat-intelligence response.
 
-```bash
-curl -X POST http://localhost:8000/webhook/ingest \
-	-H "Content-Type: application/json" \
-	-d '{
-		"hours_back": 12,
-		"run_microsoft": true,
-		"run_cisco": true
-	}'
+Headers:
+
+- `Authorization: Bearer <entra_access_token>` (required)
+- `X-Session-Id: <session-id>` (optional, recommended for continuity)
+
+Request body:
+
+```json
+{
+  "prompt": "Check if package requests==2.32.4 from pypi & if malicious, and summarize risks"
+}
 ```
 
-If `WEBHOOK_SHARED_SECRET` is set, include header `X-Webhook-Secret` with matching value.
+Response:
 
-## Local Run
+- `text/plain` streaming body
+- Response headers include:
+  - `X-Session-Id`
+  - `X-Actor-Id`
 
-```bash
-python -m code.main
-```
-
-## Configuration
-
-Runtime configuration is defined in `code/config.py` and supports environment-variable overrides, including:
-
-- `AWS_REGION`
-- `THREAT_INTEL_CONFIDENCE`
-- `SECRET_CACHE_TTL_SECONDS`
-- `MS_CLIENT_ID`, `MS_TENANT_ID`
-- `UMBRELLA_KEY`, `UMBRELLA_SECRET`
-- `ANOMALI_USERNAME`, `ANOMALI_APIKEY`
-- `WEBHOOK_SHARED_SECRET`
-
-## AWS and Terraform Assumptions
-
-This repository intentionally assumes core landing-zone and shared dependencies already exist.
-
-Expected pre-existing infrastructure:
-
-- VPC and private subnets for ECS tasks
-- Security groups aligned to app ingress/egress policy
-- ALB and target group (for service/webhook routing)
-- AWS Private CA (for Service Connect / TLS dependencies)
-- IAM OIDC trust and roles for GitHub Actions
-- Terraform backend resources (S3 state bucket and DynamoDB lock table)
-
-Terraform in this repo focuses on the application layer (task definition, service wiring, IAM, parameters), not foundational networking.
-
-## Secrets and Parameters
-
-Sensitive values are stored in SSM Parameter Store (SecureString), encrypted with KMS. These values are double encrypted and SSM will store an encrypted base64 output that will be decrypted at runtime.
+Example:
 
 ```bash
-aws kms encrypt --key-id <kms key id> --plaintext fileb://<(echo -n 'secret') --output text --query
-
-aws kms decrypt --ciphertext-blob "" --output text --query Plaintext | base64 --decode
+curl -N -X POST http://localhost:8000/threat-intel-streaming \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-Session-Id: session-123" \
+  -d '{"prompt":"Analyze IOC 1.2.3.4 and summarize severity"}'
 ```
 
-## CI/CD and Release Strategy
+## Authentication
 
-The pipeline is designed to avoid unnecessary SemVer increments while still keeping full traceability.
+Authentication is implemented as a FastAPI dependency and validates:
 
-### Build and Publish
+- JWT signature via Entra JWKS
+- issuer (`https://login.microsoftonline.com/<tenant>/v2.0`)
+- audience against allowed audiences
+- token subject/identity claims
 
-On merge to `main`, the deploy workflow:
+Actor ID is derived from token claims and used as `actor_id` for memory session isolation.
 
-1. Builds the container image.
-2. Pushes to ECR tagged with `github.sha`.
-3. Captures image digest (`sha256:...`).
-4. Signs the image.
+## Session and Memory Model
 
-### Deploy
+- `memory_id`: static resource ID from AgentCore Memory (`AGENTCORE_MEMORY_SHORT_ID`)
+- `session_id`: client conversation ID (`X-Session-Id`) or generated UUID
+- `actor_id`: authenticated user identity from token claims
 
-Terraform plan/apply consume the artifact identity from the publish job.
+An AWS bedrock Agentcore managed memory object is created for short-term memory. This will keep the session & actor historic interactions with the agent for a set defined duration of days. This is passed into the runtime environment variables and when agent is initialised, will reference the memory object/Event objects that are linked to the session & actor ID. The session ID is dervied from the consumer application, whilst the actor object is specific towards the Entra ID user object ID, that links the identity to the session for short-term memory per session & interaction with agent.
 
-- Deployment uses image digest for ECS task definition when provided.
-- This gives immutable runtime behavior, regardless of later tag aliasing.
+## Bedrock Model & GuardRails
 
-### Release (SemVer)
+AWS Bedrock Guardrails act as a safety layer between an application and an AI model, controlling both what goes into the model (inputs) and what comes out (outputs).
 
-After successful deploy, release job:
+They provide several types of controls:
 
-1. Runs semantic-release to compute and publish SemVer tag.
-2. Retags the already-published SHA image in ECR to the SemVer tag.
-3. Writes run summary containing:
-	 - SemVer tag
-	 - Source SHA tag
-	 - Image digest
+- Content filters: Detect and block harmful content (e.g. hate, violence, sexual content, insults, misconduct, prompt attacks).
+- Denied topics: Let you define specific topics to be avoided
+- Word filters: Block or flag specific words or phrases (e.g. profanity, offensive terms).
+- Sensitive information filters: Detect and block or mask sensitive data (like PII & PHI).
 
-Key point: SemVer is a promotion label over an existing immutable image, not a rebuild trigger.
-
-## Repository Structure
-
-- `code/` application code (API, orchestrator, services, models, utils)
-- `terraform/` infrastructure code and variables
-- `.github/workflows/` CI/CD workflows
-- `tests/` unit tests
-
-## Operational Notes
-
-- ECS logs are JSON formatted for better ingestion/search in CloudWatch.
-- Microsoft IOC expiry is set in code to manage indicator quota over time.
-- Credential cache in orchestrator reduces SSM calls and API latency.
+## Infrastructure
+The following assumptions around landing zone and core infrastructure in AWS are:
+- VPC and auxilliary VPC services that enable public & private subnets across all availability zones across region are deployed.
+- AWS private CA configured to enable ECS service connect mesh, ensures transport encryption between ALB & ECS service running strands AI agent.
+- KMS keys used to encrypt artefacts such as SSM parameters, and ECR images.
+- The bedrock components (AWS provider not mature yet - Agentcore Memory, Model ARN & Guardrails). Build these outside of terraform and reference in variables.
