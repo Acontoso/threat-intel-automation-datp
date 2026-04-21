@@ -4,11 +4,13 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from strands import Agent, tool
+from strands import Agent
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 
-from .auth import AuthContext, require_scopes
+from code.middleware.reqlogging import RequestResponseLoggingMiddleware
+
+from .middleware.auth import AuthContext, AuthMiddleware, require_scopes
 from .tools.clients import AppClients, create_app_clients
 
 
@@ -22,6 +24,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Threat Intel Automation API", version="1.0", lifespan=lifespan)
+app.add_middleware(AuthMiddleware)
 THREAT_INTEL_REQUIRED_SCOPES = {
     scope.strip()
     for scope in os.getenv("THREAT_INTEL_REQUIRED_SCOPES", "ThreatIntel.Read").split(",")
@@ -43,7 +46,7 @@ When displaying responses back to requesting services:
 
 Always explain the threat intelligence findings clearly and provide context for the analysis.
 """
-
+app.add_middleware(RequestResponseLoggingMiddleware)
 
 class PromptRequest(BaseModel):
     prompt: str = Field(..., min_length=1)

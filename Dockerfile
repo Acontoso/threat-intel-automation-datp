@@ -10,9 +10,9 @@ ENV PATH="/app/venv/bin:$PATH"
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt --no-cache-dir
-COPY app/ .
+COPY code/ code/
 RUN useradd -m ai-intel
 RUN chown -R ai-intel:ai-intel /app
 USER ai-intel
 EXPOSE 8000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD ["uvicorn", "code.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

@@ -4,9 +4,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Callable
 
+from collections.abc import Awaitable, Callable as AwaitableCallable
+
 import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException, Request, status
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse, Response
 
 AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID", "")
 AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "")
@@ -15,9 +18,6 @@ AZURE_ALLOWED_AUDIENCES: set[str] = {
     for value in os.getenv("AZURE_ALLOWED_AUDIENCES", AZURE_CLIENT_ID).split(",")
     if value.strip()
 }
-
-_bearer_scheme = HTTPBearer(auto_error=False)
-
 
 @dataclass
 class AuthContext:
@@ -120,19 +120,17 @@ def _validate_access_token(raw_token: str) -> AuthContext:
     return AuthContext(token=claims, actor_id=actor_id, scopes=scopes)
 
 
-def require_auth(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-) -> AuthContext:
+def require_auth(request: Request) -> AuthContext:
     """
-        FastAPI dependency that validates an Azure AD Bearer token.
-        Raises HTTP 401 if the token is absent or invalid.
-        Raises HTTP 403 if the token lacks required scopes.
+        FastAPI dependency that reads the validated AuthContext from request state.
+        The AuthMiddleware must be registered to populate request.state.auth.
     """
-    if credentials is None or credentials.scheme.lower() != "bearer":
+    auth = getattr(request.state, "auth", None)
+    if auth is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token."
         )
-    return _validate_access_token(credentials.credentials)
+    return auth
 
 
 def require_scopes(required_scopes: set[str]) -> Callable[..., AuthContext]:
@@ -144,3 +142,19 @@ def require_scopes(required_scopes: set[str]) -> Callable[..., AuthContext]:
         return auth
 
     return _dependency
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: AwaitableCallable[[Request], Awaitable[Response]]) -> Response:
+        authorization = request.headers.get("Authorization", "")
+        if not authorization.lower().startswith("bearer "):
+            return JSONResponse(status_code=401, content={"detail": "Missing bearer token."})
+
+        raw_token = authorization[len("bearer "):]
+        try:
+            auth_context = _validate_access_token(raw_token)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+        request.state.auth = auth_context
+        return await call_next(request)
