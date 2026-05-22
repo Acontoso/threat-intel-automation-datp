@@ -51,6 +51,7 @@ jobs:
         uses: cycjimmy/semantic-release-action@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TYPE: ${{ inputs.release_type != 'auto' && inputs.release_type || '' }}
 
   retag-image:
     name: Retag Image to SemVer
@@ -130,6 +131,7 @@ jobs:
   apply-prod:
     name: Terraform Apply - Prod
     runs-on: ubuntu-latest
+    environment: prod
     needs:
       - semantic-release
       - retag-image
@@ -141,4 +143,3 @@ jobs:
       image_tag: ${{ needs.semantic-release.outputs.new_version }}
       image_digest: ${{ needs.retag-image.outputs.image_digest }}
     secrets: inherit
-

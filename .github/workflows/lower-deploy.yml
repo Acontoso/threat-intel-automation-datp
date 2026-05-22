@@ -1,9 +1,9 @@
 name: Deploy
 
-# on:
-#   push:
-#     branches:
-#       - main
+on:
+  push:
+    branches:
+      - main
 
 env:
   AWS_REGION: "ap-southeast-2"
@@ -40,22 +40,28 @@ jobs:
 
     - name: Build & Push
       id: push
+      env:
+        REGISTRY: ${{ secrets.REGISTRY }}
+        REPOSITORY: ${{ secrets.REPOSITORY }}
       run: |
         IMAGE_TAG="${GITHUB_SHA}"
-        IMAGE_URI="${secrets.REGISTRY}/${secrets.REPOSITORY}:${IMAGE_TAG}"
+        IMAGE_URI="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
 
         docker build -f Dockerfile -t "${IMAGE_URI}" .
         docker push "${IMAGE_URI}"
 
-        IMAGE_SHA=$(aws ecr describe-images --repository-name "${secrets.REPOSITORY}" --image-ids imageTag="${IMAGE_TAG}" --query 'imageDetails[].imageDigest' --output text)
+        IMAGE_SHA=$(aws ecr describe-images --repository-name "${REPOSITORY}" --image-ids imageTag="${IMAGE_TAG}" --query 'imageDetails[].imageDigest' --output text)
         echo "image_sha=${IMAGE_SHA}" >> "$GITHUB_OUTPUT"
         echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
       # AWS now supports the ability to sign your images directly when stored in ECR, referencing the AWS signer ARN to sign the image instead of doing during CICD
     - name: Sign image with key
+      env:
+        REGISTRY: ${{ secrets.REGISTRY }}
+        REPOSITORY: ${{ secrets.REPOSITORY }}
       run: |
         export NOTATION_USERNAME=AWS
         export NOTATION_PASSWORD=$(aws ecr get-login-password --region ap-southeast-2)
-        notation sign "${secrets.REGISTRY}/${secrets.REPOSITORY}:${{ steps.push.outputs.image_tag }}" --plugin "com.amazonaws.signer.notation.plugin" --id "arn:aws:signer:${{env.AWS_REGION}}:${{secrets.AWS_ACCOUNT_ID}}:/signing-profiles/container_image_signing"
+        notation sign "${REGISTRY}/${REPOSITORY}:${{ steps.push.outputs.image_tag }}" --plugin "com.amazonaws.signer.notation.plugin" --id "arn:aws:signer:${{ env.AWS_REGION }}:${{ secrets.AWS_ACCOUNT_ID }}:/signing-profiles/container_image_signing"
 
     - name: Logout of Amazon ECR
       if: always()
